@@ -1,0 +1,3 @@
+[submodule "cut3r"]
+	path = cut3r
+	url = https://github.com/jjordanoc/CUT3R.git
