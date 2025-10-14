@@ -1,3 +1,6 @@
 [submodule "cut3r"]
 	path = cut3r
 	url = https://github.com/jjordanoc/CUT3R.git
+[submodule "monst3r"]
+	path = monst3r
+	url = https://github.com/Junyi42/monst3r
