@@ -1,9 +1,6 @@
 import modal
 import sys
 
-sys.path.insert(0, "monst3r")
-sys.path.insert(0, "monst3r/dust3r")
-
 # Modal App Configuration
 image = (
     modal.Image.debian_slim(python_version="3.10")
@@ -14,7 +11,7 @@ image = (
         "gradio",
         "matplotlib",
         "tqdm",
-        "opencv-python",
+        "opencv-python-headless",
         "scipy",
         "einops",
         "gdown",
@@ -23,13 +20,16 @@ image = (
         "huggingface-hub[torch]>=0.22",
         "evo",
     )
+    .pip_install("imageio", "pillow")
     .apt_install("git")
+    .run_commands("git clone --recursive https://github.com/junyi42/monst3r", "sed -i 's/opencv-python/opencv-python-headless/g' monst3r/requirements.txt", "cd monst3r && pip install -r requirements.txt")
+
 )
 
 app = modal.App("monst3r-demo", image=image)
 
 volume = modal.Volume.from_name(
-    "monst3r-volume", create_if_missing=True
+    "v0", create_if_missing=True
 )
 
 # This is the path inside the container where we will clone the repo and store data.
@@ -57,69 +57,15 @@ def bootstrap_monst3r_repo():
         sys.path.insert(0, dust3r_path)
 
 
-def get_args_parser():
-    import argparse
-    parser = argparse.ArgumentParser()
-    parser_url = parser.add_mutually_exclusive_group()
-    parser_url.add_argument("--local_network", action='store_true', default=False,
-                            help="make app accessible on local network: address will be set to 0.0.0.0")
-    parser_url.add_argument("--server_name", type=str, default=None, help="server url, default is 127.0.0.1")
-    parser.add_argument("--image_size", type=int, default=512, choices=[512, 224], help="image size")
-    parser.add_argument("--preprocessed_data", type=str, default="/root/monst3r_project/data/preprocessed_data.pth",
-                        help="Path to the preprocessed data file (.pth) created by preprocess.py. Assumes path is in the volume.")
-    parser.add_argument("--server_port", type=int, help=("will start gradio app on this port (if available). "
-                                                         "If None, will search for an available port starting at 7860."),
-                        default=None)
-    parser.add_argument("--weights", type=str, help="path to the model weights", default='checkpoints/MonST3R_PO-TA-S-W_ViTLarge_BaseDecoder_512_dpt.pth')
-    parser.add_argument("--model_name", type=str, default='Junyi42/MonST3R_PO-TA-S-W_ViTLarge_BaseDecoder_512_dpt', help="model name")
-    parser.add_argument("--device", type=str, default='cuda', help="pytorch device")
-    parser.add_argument("--output_dir", type=str, default='./demo_tmp', help="value for tempfile.tempdir")
-    parser.add_argument("--prev_output_dir", type=str, default=None, help="previous output dir")
-    parser.add_argument("--prev_output_index", type=int, default=None, help="previous output video index")
-    parser.add_argument("--silent", action='store_true', default=False,
-                        help="silence logs")
-    parser.add_argument("--input_dir", type=str, help="Path to input images directory", default=None)
-    parser.add_argument("--seq_name", type=str, help="Sequence name for evaluation", default='NULL')
-    parser.add_argument('--use_gt_davis_masks', action='store_true', default=False, help='Use ground truth masks for DAVIS')
-    parser.add_argument('--not_batchify', action='store_true', default=False, help='Use non batchify mode for global optimization')
-    parser.add_argument('--real_time', action='store_true', default=False, help='Realtime mode')
-    parser.add_argument('--window_wise', action='store_true', default=False, help='Use window wise mode for optimization')
-    parser.add_argument('--window_size', type=int, default=100, help='Window size')
-    parser.add_argument('--window_overlap_ratio', type=float, default=0.5, help='Window overlap ratio')
-    parser.add_argument('--batch_size', type=int, default=16, help='Batch size for inference')
-
-    parser.add_argument('--fps', type=int, default=0, help='FPS for video processing')
-    parser.add_argument('--num_frames', type=int, default=200, help='Maximum number of frames for video processing')
-    
-    # Add "share" argument if you want to make the demo accessible on the public internet
-    parser.add_argument("--share", action='store_true', default=False, help="Share the demo")
-    return parser
-
-def set_scenegraph_options(inputfiles, winsize, refid, scenegraph_type):
-    import math
+def update_scenegraph_ui(scenegraph_type):
+    """Updates the visibility of sliders based on the selected scenegraph type."""
     import gradio
-    # if inputfiles[0] is a video, set the num_files to 200
-    if inputfiles is not None and len(inputfiles) == 1 and inputfiles[0].name.endswith(('.mp4', '.avi', '.mov', '.MP4', '.AVI', '.MOV')):
-        num_files = 200
-    else:
-        num_files = len(inputfiles) if inputfiles is not None else 1
-    max_winsize = max(1, math.ceil((num_files-1)/2))
-    if scenegraph_type == "swin" or scenegraph_type == "swin2stride" or scenegraph_type == "swinstride":
-        winsize = gradio.Slider(label="Scene Graph: Window Size", value=min(max_winsize,5),
-                                minimum=1, maximum=max_winsize, step=1, visible=True)
-        refid = gradio.Slider(label="Scene Graph: Id", value=0, minimum=0,
-                              maximum=num_files-1, step=1, visible=False)
+    if scenegraph_type in ["swin", "swinstride", "swin2stride"]:
+        return gradio.update(visible=True), gradio.update(visible=False)
     elif scenegraph_type == "oneref":
-        winsize = gradio.Slider(label="Scene Graph: Window Size", value=max_winsize,
-                                minimum=1, maximum=max_winsize, step=1, visible=False)
-        refid = gradio.Slider(label="Scene Graph: Id", value=0, minimum=0,
-                              maximum=num_files-1, step=1, visible=True)
-    else:
-        winsize = gradio.Slider(label="Scene Graph: Window Size", value=max_winsize,
-                                minimum=1, maximum=max_winsize, step=1, visible=False)
-        refid = gradio.Slider(label="Scene Graph: Id", value=0, minimum=0,
-                              maximum=num_files-1, step=1, visible=False)
-    return winsize, refid
+        return gradio.update(visible=False), gradio.update(visible=True)
+    else:  # 'complete'
+        return gradio.update(visible=False), gradio.update(visible=False)
 
 
 @app.function(gpu="A10G", volumes={REMOTE_PROJECT_ROOT: volume}, timeout=1800)
@@ -158,6 +104,10 @@ def run_inference_on_gpu(
 
     # Ensure the remote environment is set up
     bootstrap_monst3r_repo()
+
+    import sys
+    sys.path = ['/root/monst3r_project/monst3r/third_party/RAFT/core'] + sys.path
+    from utils.utils import bilinear_sampler, coords_grid
 
     from dust3r.inference import inference
     from dust3r.model import AsymmetricCroCo3DStereo
@@ -324,22 +274,18 @@ def main_demo(tmpdirname, image_size, server_name, server_port, silent=False, ar
         """
         # 1. Unpack arguments from Gradio UI
         (
-            inputfiles, schedule, niter, min_conf_thr, as_pointcloud,
+            schedule, niter, min_conf_thr, as_pointcloud,
             mask_sky, clean_depth, transparent_cams, cam_size, show_cam,
             scenegraph_type, winsize, refid, seq_name, new_model_weights,
             temporal_smoothing_weight, translation_weight, shared_focal,
             flow_loss_weight, flow_loss_start_iter, flow_loss_threshold,
             use_davis_gt_mask, fps, num_frames
         ) = args_list
-
-        if not inputfiles:
-            raise gradio.Error("Please upload one or more images.")
         
-        # 2. Define path for the output scene file in the shared volume
+        # 2. Define path for the output scene file based on the preprocessed data path
         import hashlib
         import os
-        filenames_str = "".join(f.name for f in inputfiles)
-        file_hash = hashlib.md5(filenames_str.encode()).hexdigest()
+        file_hash = hashlib.md5(args.preprocessed_data.encode()).hexdigest()
         scene_output_path = os.path.join(REMOTE_PROJECT_ROOT, "outputs", f"scene_{file_hash}.pth")
         
         # 3. Call the remote GPU function to get the scene
@@ -412,7 +358,6 @@ def main_demo(tmpdirname, image_size, server_name, server_port, silent=False, ar
 
         gradio.HTML(f'<h2 style="text-align: center;">MonST3R Demo</h2>')
         with gradio.Column():
-            inputfiles = gradio.File(file_count="multiple")
             with gradio.Row():
                 schedule = gradio.Dropdown(["linear", "cosine"],
                                            value='linear', label="schedule", info="For global alignment!")
@@ -424,8 +369,8 @@ def main_demo(tmpdirname, image_size, server_name, server_port, silent=False, ar
                                                   info="Define how to make pairs",
                                                   interactive=True)
                 winsize = gradio.Slider(label="Scene Graph: Window Size", value=5,
-                                        minimum=1, maximum=1, step=1, visible=False)
-                refid = gradio.Slider(label="Scene Graph: Id", value=0, minimum=0, maximum=0, step=1, visible=False)
+                                        minimum=1, maximum=50, step=1, visible=True)
+                refid = gradio.Slider(label="Scene Graph: Id", value=0, minimum=0, maximum=100, step=1, visible=False)
 
             run_btn = gradio.Button("Run")
 
@@ -462,14 +407,12 @@ def main_demo(tmpdirname, image_size, server_name, server_port, silent=False, ar
             outgallery = gradio.Gallery(label='rgb,depth,confidence, init_conf', columns=4, height="100%")
 
             # events
-            scenegraph_type.change(set_scenegraph_options,
-                                   inputs=[inputfiles, winsize, refid, scenegraph_type],
+            scenegraph_type.change(fn=update_scenegraph_ui,
+                                   inputs=[scenegraph_type],
                                    outputs=[winsize, refid])
-            inputfiles.change(set_scenegraph_options,
-                              inputs=[inputfiles, winsize, refid, scenegraph_type],
-                              outputs=[winsize, refid])
+
             run_btn.click(fn=run_reconstruction_and_get_scene,
-                          inputs=[inputfiles, schedule, niter, min_conf_thr, as_pointcloud,
+                          inputs=[schedule, niter, min_conf_thr, as_pointcloud,
                                   mask_sky, clean_depth, transparent_cams, cam_size, show_cam,
                                   scenegraph_type, winsize, refid, seq_name, new_model_weights, 
                                   temporal_smoothing_weight, translation_weight, shared_focal, 
@@ -508,6 +451,8 @@ def main(
     window_size: int = 100,
     window_overlap_ratio: float = 0.5,
     batch_size: int = 16,
+    seq_name: str = "sequence",
+    weights: str = 'checkpoints/MonST3R_PO-TA-S-W_ViTLarge_BaseDecoder_512_dpt.pth',
 ):
     import os
     import tempfile
@@ -519,7 +464,8 @@ def main(
         server_name=server_name, local_network=local_network, image_size=image_size,
         preprocessed_data=preprocessed_data, server_port=server_port, output_dir=output_dir,
         silent=silent, share=share, not_batchify=not_batchify, window_wise=window_wise,
-        window_size=window_size, window_overlap_ratio=window_overlap_ratio, batch_size=batch_size
+        window_size=window_size, window_overlap_ratio=window_overlap_ratio, batch_size=batch_size, seq_name=seq_name,
+        weights=weights
     )
 
     if args.output_dir is not None:
