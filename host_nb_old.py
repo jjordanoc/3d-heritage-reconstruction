@@ -19,24 +19,6 @@ image = (
     .entrypoint([])  # remove verbose logging by base image on entry
     .apt_install("git", "build-essential", "curl", "unzip", "wget", "git-lfs", "clang","libgl1", "libglib2.0-0","libgomp1")
     .pip_install("jupyter")
-    .pip_install(
-        "torch",
-        "torchvision",
-        "roma",
-        "gradio",
-        "matplotlib",
-        "tqdm",
-        "opencv-python-headless",
-        "scipy",
-        "einops",
-        "gdown",
-        "trimesh",
-        "pyglet<2",
-        "huggingface-hub[torch]>=0.22",
-        "evo",
-    )
-    .pip_install("imageio", "pillow")
-    .run_commands("git clone --recursive https://github.com/junyi42/monst3r", "sed -i 's/opencv-python/opencv-python-headless/g' monst3r/requirements.txt", "cd monst3r && pip install -r requirements.txt")
     .env({"HF_HUB_CACHE": HF_CACHE_PATH, "HF_HUB_ENABLE_HF_TRANSFER": "1", "LD_LIBRARY_PATH": "/usr/local/lib/python3.10/site-packages/torch/lib"})
 )
 

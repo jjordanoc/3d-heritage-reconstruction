@@ -7,4 +7,5 @@ requires-python = ">=3.13"
 dependencies = [
     "gradio>=5.49.1",
     "modal>=1.2.0",
+    "pillow>=11.3.0",
 ]
