@@ -99,7 +99,7 @@ def fastapi_app():
         """
         print("Running inference...")
         images_path = f"/backend_data/reconstructions/{id}/images"
-        inf_res_path = "/preds/43249161-bea0-42eb-a0af-142c2997dd02"#inference_obj.run_inference.remote(images_path)
+        inf_res_path = inference_obj.run_inference.remote(images_path)
         print("Inference completed")
         return str(vol_mnt_loc) + inf_res_path + "/predictions.pt"
     
@@ -157,6 +157,6 @@ def fastapi_app():
 
     @web_app.get("/pointcloud/{pc_id}/{tag}")
     async def get_pointcloud(pc_id: str, tag: str):
-        pass
+        
 
     return web_app
