@@ -1,0 +1,28 @@
+/* main.css */
+
+/* Styles for the navbar */
+.navbar {
+    background-color: #333;
+    color: white;
+    padding: 1rem;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.navbar a {
+    color: white;
+    text-decoration: none;
+    padding: 0.5rem 1rem;
+}
+
+/* Styles for the category list */
+.category-list {
+    list-style-type: none;
+    padding: 0;
+}
+
+.category-list li {
+    padding: 0.5rem 0;
+    font-size: 1.2rem;
+}
