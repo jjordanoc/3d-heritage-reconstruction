@@ -4,12 +4,18 @@ from fastapi import UploadFile, File, HTTPException
 from pathlib import Path
 
 # environment stuff
-image = modal.Image.debian_slim().pip_install([
-    "fastapi[standard]",
-    "pillow",
-    "python-multipart"
-    "torch"
-])
+image = modal.Image.debian_slim(python_version="3.10").apt_install(
+        "git",  # if you need it
+        "libgl1-mesa-glx",  # Provides libGL.so.1
+        "libglib2.0-0",     # Often needed by Open3D
+    ).pip_install([
+        "fastapi[standard]",
+        "pillow",
+        "python-multipart",
+        "torch",
+        "numpy",
+        "open3d"
+    ])
 
 volume = modal.Volume.from_name(name="ut3c-heritage")
 
@@ -28,21 +34,20 @@ def fastapi_app():
     import os
     import uuid
     import io
-    from contextlib import asynccontextmanager
-    import shutil
     import torch
+    import numpy as np
+    import open3d as o3d
 
     web_app = FastAPI()
     Pi3Remote = modal.Cls.from_name("pi3-inference", "ModelInference")
     inference_obj = Pi3Remote()
 
-    @asynccontextmanager
-    def lifespan():
+    @web_app.on_event("startup")
+    async def lifespan():
         folder_path = vol_mnt_loc / "backend_data" / "reconstructions" / "auditorio" / "images"
-        shutil.rmtree(folder_path)
+        #shutil.rmtree(folder_path)
         folder_path.mkdir(parents=True, exist_ok=True)
         print(f"Initialized folder: {folder_path}")
-        yield
     
 
     async def upload_image(id: str, file: UploadFile = File(...)):
@@ -83,6 +88,7 @@ def fastapi_app():
         img = img.resize((new_width, new_height), Image.BICUBIC)
         uuidname = uuid.uuid4()
         img.save(path / f"{uuidname}.png", format="PNG")
+        volume.commit()
         return path / f"{uuidname}.png"
 
     async def run_inference(id: str):
@@ -91,22 +97,59 @@ def fastapi_app():
         id: the id of a project
         returns: Path the path of the .pt object
         """
-        path = vol_mnt_loc / "backend_data" / "reconstructions" / id / "images"
-        return inference_obj.run_inference.remote(vol_mnt_loc)
+        print("Running inference...")
+        images_path = f"/backend_data/reconstructions/{id}/images"
+        inf_res_path = "/preds/43249161-bea0-42eb-a0af-142c2997dd02"#inference_obj.run_inference.remote(images_path)
+        print("Inference completed")
+        return str(vol_mnt_loc) + inf_res_path + "/predictions.pt"
     
-    def process_infered_data(inf_data_path,pty_location,conf_thresh = 50):
+    def process_infered_data(inf_data_path,id,conf_thres = 50):
         """
         """
-        data = torch.load(inf_data_path)
-        for i in data:
-            print(i)
+        pty_location = str(vol_mnt_loc) + f"/backend_data/reconstructions/{id}/models/latest.ply"
+        pty_folder = str(vol_mnt_loc) + f"/backend_data/reconstructions/{id}/models"
+        Path(pty_folder).mkdir(parents=True, exist_ok=True)
+        volume.commit()
+        volume.reload()
+        predictions = torch.load(inf_data_path,weights_only=False,map_location=torch.device('cpu'))
+
+        pred_world_points = predictions["points"].numpy()
+        pred_world_points_conf = predictions.get(
+            "conf",
+            torch.ones_like(predictions["points"])
+        ).numpy()
+        images = predictions["images"].numpy()
+
+        vertices_3d = pred_world_points.reshape(-1, 3)
+        colors_rgb = (images.reshape(-1, 3) * 255).astype(np.uint8)
+        conf = pred_world_points_conf.reshape(-1)
+
+        conf_threshold = conf_thres / 100
+        mask = (conf >= conf_threshold) & (conf > 1e-5)
+
+        vertices_3d = vertices_3d[mask]
+        colors_rgb = colors_rgb[mask]
+
+        # Create Open3D point cloud
+        pcd = o3d.geometry.PointCloud()
+        pcd.points = o3d.utility.Vector3dVector(vertices_3d)
+        pcd.colors = o3d.utility.Vector3dVector(colors_rgb / 255.0)
+
+        # Save as PLY
+        o3d.io.write_point_cloud(pty_location, pcd)
+        print(f"Saved PLY point cloud to {pty_location}")
+        volume.commit()
+        return pty_location
+
 
 
     @web_app.post("/pointcloud/{id}")
     async def new_image(id: str, file: UploadFile = File(...)):
         uploaded = await upload_image(id,file)
-        inference_path = run_inference()
-        process_infered_data(inference_path,"")
+        print("Image uploaded succesfully")
+        inference_path = await run_inference(id)
+        print("Inference results at " + str(inference_path))
+        process_infered_data(str(inference_path),id)
         
         return JSONResponse(
                 content={"status": "OK", "message": f"File {uploaded.name}.png  created successfully"},
