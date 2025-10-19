@@ -307,7 +307,7 @@ def fastapi_app():
 
     @web_app.post("/pointcloud/{id}")
     async def new_image(id: str, file: UploadFile = File(...), background_tasks: BackgroundTasks = None):
-        uploaded = await upload_image(id, file)
+        uploaded = await upload_image(id, file) # can be made async
         print("Image uploaded successfully")
         
         inference_path = await run_inference(id)
@@ -316,10 +316,15 @@ def fastapi_app():
         # Save a copy of predictions to standard location for GET endpoint
         standard_predictions_path = Path(vol_mnt_loc) / "backend_data" / "reconstructions" / id / "predictions.pt"
         standard_predictions_path.parent.mkdir(parents=True, exist_ok=True)
-        
+
+        # refresh volume with latest changes
+        volume.reload()
+
         import shutil
         shutil.copy2(inference_path, str(standard_predictions_path))
         print(f"Saved predictions to {standard_predictions_path}")
+
+       
         
         # Extract last image's pointcloud and camera pose for immediate response
         temp_ply_path, camera_pose = extract_last_image_pointcloud(str(inference_path), id)
