@@ -33,7 +33,7 @@ MNT_DIR = "/mnt/vol"
     gpu="a10g",  # or "a100", "t4", etc.
     volumes={MNT_DIR: volume},
     timeout=600,  # 10 minutes
-    scaledown_window=60,  # keep warm for 5 minutes
+    scaledown_window=240,  # keep warm for 5 minutes
 )
 class ModelInference:
     @modal.enter()
@@ -110,6 +110,8 @@ class ModelInference:
         edge = depth_edge(predictions['local_points'][..., 2], rtol=0.03)
         predictions['conf'][edge] = 0.0
         del predictions['local_points']
+
+        print("Camera")
         
         # Much simpler and fast enough
         predictions_path = output_dir / "predictions.pt"

@@ -14,27 +14,30 @@ image = modal.Image.debian_slim(python_version="3.10").apt_install(
         "python-multipart",
         "torch",
         "numpy",
-        "open3d"
+        "open3d",
+        "requests-toolbelt"
     ])
 
 volume = modal.Volume.from_name(name="ut3c-heritage")
 
 
 #application stuff
-app = modal.App("ut3c-heritage-backend", image=image)
+app = modal.App("ut3c-heritage-backend-brute", image=image)
 vol_mnt_loc = Path("/mnt/volume")
 @app.function(image=image,volumes={vol_mnt_loc:volume})
 @modal.concurrent(max_inputs=100)
 @modal.asgi_app()
 def fastapi_app():
-    from fastapi import FastAPI, Response, status
+    from fastapi import FastAPI, Response, status, BackgroundTasks
     from fastapi.responses import JSONResponse, FileResponse
     from PIL import Image
     from fastapi import UploadFile, File, HTTPException
     from fastapi.middleware.cors import CORSMiddleware
+    from requests_toolbelt.multipart.encoder import MultipartEncoder
     import os
     import uuid
     import io
+    import json
     import torch
     import numpy as np
     import open3d as o3d
@@ -64,6 +67,71 @@ def fastapi_app():
         cl, _ = cld.remove_statistical_outlier(20, 2.0)
         return cl.voxel_down_sample(0.05)
 
+    def extract_last_image_pointcloud(inf_data_path, id, conf_thres=50):
+        """
+        Extracts the pointcloud and camera pose for the LAST (most recent) image.
+        Returns: tuple (ply_path, camera_pose)
+        """
+        print(f"\n=== Extracting last image from {inf_data_path} ===")
+        predictions = torch.load(inf_data_path, map_location="cpu")
+        
+        # Extract camera pose for the last image [batch=0, image=-1]
+        camera_poses = predictions.get("camera_poses")
+        camera_pose = None
+        if camera_poses is not None:
+            # Handle batch dimension [1, N, ...] format
+            if camera_poses.dim() >= 2:
+                camera_pose = camera_poses[0][-1].numpy().tolist()
+            else:
+                camera_pose = camera_poses[-1].numpy().tolist()
+            print(f"Extracted camera pose for last image: shape = {camera_poses.shape}")
+        else:
+            print("WARNING: No camera_poses found in predictions")
+        
+        # Extract pointcloud data for last image
+        pred_world_points = predictions["points"]
+        pred_world_points_conf = predictions.get("conf", torch.ones_like(predictions["points"]))
+        images = predictions["images"]
+        
+        # Get last image data [batch=0, image=-1]
+        last_points = pred_world_points[0][-1].numpy()  # [H*W, 3]
+        last_conf = pred_world_points_conf[0][-1].numpy()  # [H*W]
+        last_colors = images[0][-1].numpy()  # [H*W, 3]
+        
+        print(f"Last image points shape: {last_points.shape}")
+        print(f"Last image colors shape: {last_colors.shape}")
+        print(f"Last image conf shape: {last_conf.shape}")
+        
+        # Reshape and apply confidence threshold
+        vertices_3d = last_points.reshape(-1, 3)
+        colors_rgb = (last_colors.reshape(-1, 3) * 255).astype(np.uint8)
+        conf = last_conf.reshape(-1)
+        
+        conf_threshold = conf_thres / 100.0
+        mask = (conf >= conf_threshold) & (conf > 1e-5)
+        print(f"Confidence mask kept {mask.sum()} / {len(mask)} points")
+        
+        vertices_3d = vertices_3d[mask]
+        colors_rgb = colors_rgb[mask]
+        
+        if len(vertices_3d) == 0:
+            print("WARNING: No points kept after filtering!")
+            return None, camera_pose
+        
+        # Create Open3D point cloud
+        pcd = o3d.geometry.PointCloud()
+        pcd.points = o3d.utility.Vector3dVector(vertices_3d)
+        pcd.colors = o3d.utility.Vector3dVector(colors_rgb / 255.0)
+        
+        # Save temporary PLY
+        temp_folder = Path(vol_mnt_loc) / "backend_data" / "reconstructions" / str(id) / "models"
+        temp_folder.mkdir(parents=True, exist_ok=True)
+        temp_ply_path = temp_folder / "temp_latest.ply"
+        
+        o3d.io.write_point_cloud(str(temp_ply_path), pcd)
+        print(f"Saved temporary PLY to {temp_ply_path}")
+        
+        return str(temp_ply_path), camera_pose
 
     async def upload_image(id: str, file: UploadFile = File(...)):
         """
@@ -238,17 +306,49 @@ def fastapi_app():
 
 
     @web_app.post("/pointcloud/{id}")
-    async def new_image(id: str, file: UploadFile = File(...)):
-        uploaded = await upload_image(id,file)
-        print("Image uploaded succesfully")
+    async def new_image(id: str, file: UploadFile = File(...), background_tasks: BackgroundTasks = None):
+        uploaded = await upload_image(id, file)
+        print("Image uploaded successfully")
+        
         inference_path = await run_inference(id)
         print("Inference results at " + str(inference_path))
-        process_infered_data(str(inference_path),id)
-        process_infered_data_per_image(str(inference_path),id)
         
-        return JSONResponse(
-                content={"status": "OK", "message": f"File {uploaded.name}  created successfully"},
-                status_code=status.HTTP_200_OK)
+        # Save a copy of predictions to standard location for GET endpoint
+        standard_predictions_path = Path(vol_mnt_loc) / "backend_data" / "reconstructions" / id / "predictions.pt"
+        standard_predictions_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        import shutil
+        shutil.copy2(inference_path, str(standard_predictions_path))
+        print(f"Saved predictions to {standard_predictions_path}")
+        
+        # Extract last image's pointcloud and camera pose for immediate response
+        temp_ply_path, camera_pose = extract_last_image_pointcloud(str(inference_path), id)
+        
+        if temp_ply_path is None:
+            raise HTTPException(status_code=500, detail="Failed to extract pointcloud from last image")
+        
+        # Schedule full reconstruction in the background (non-blocking)
+        if background_tasks:
+            background_tasks.add_task(process_infered_data, str(inference_path), id)
+            background_tasks.add_task(process_infered_data_per_image, str(inference_path), id)
+            print("Scheduled background tasks for full reconstruction")
+        
+        # Read the temporary PLY file and prepare multipart response
+        with open(temp_ply_path, 'rb') as f:
+            ply_data = f.read()
+        
+        # Build multipart response with pointcloud and camera pose
+        multipart_data = MultipartEncoder(
+            fields={
+                'pointcloud': (f"{id}_latest.ply", ply_data, 'application/octet-stream'),
+                'camera_pose': json.dumps(camera_pose) if camera_pose is not None else json.dumps(None)
+            }
+        )
+        
+        return Response(
+            content=multipart_data.to_string(),
+            media_type=multipart_data.content_type
+        )
 
     @web_app.get("/pointcloud/{pc_id}/{tag}")
     async def get_pointcloud(pc_id: str, tag: str):
@@ -258,11 +358,42 @@ def fastapi_app():
         if not ply_path.exists():
             return {"error": "Point cloud file not found."}
 
+        # Load LAST camera pose from predictions file
+        predictions_path = Path(vol_mnt_loc) / "backend_data" / "reconstructions" / pc_id / "predictions.pt"
+        camera_pose = None
+        
+        if predictions_path.exists():
+            try:
+                predictions = torch.load(str(predictions_path), map_location="cpu")
+                camera_poses_tensor = predictions.get("camera_poses")
+                
+                if camera_poses_tensor is not None:
+                    # Extract only the LAST camera pose [batch=0, image=-1]
+                    # Handle batch dimension [1, N, ...] format
+                    if camera_poses_tensor.dim() >= 2 and camera_poses_tensor.shape[0] == 1:
+                        camera_pose = camera_poses_tensor[0][-1].numpy().tolist()
+                    else:
+                        camera_pose = camera_poses_tensor[-1].numpy().tolist()
+                    print(f"Loaded last camera pose for project {pc_id}")
+                else:
+                    print(f"WARNING: No camera_poses found in predictions for {pc_id}")
+            except Exception as e:
+                print(f"WARNING: Failed to load camera pose: {e}")
+        else:
+            print(f"WARNING: predictions.pt not found at {predictions_path}")
+
         # Always serve the latest file on disk
-        return FileResponse(
-            path=str(ply_path),
-            filename=f"{pc_id}_{tag}.ply",
-            media_type="application/octet-stream"
-        )
+        with open(ply_path, 'rb') as f:
+            multipart_data = MultipartEncoder(
+                fields={
+                    'pointcloud': (f"{pc_id}_{tag}.ply", f.read(), 'application/octet-stream'),
+                    'camera_pose': json.dumps(camera_pose) if camera_pose is not None else json.dumps(None)
+                }
+            )
+            
+            return Response(
+                content=multipart_data.to_string(),
+                media_type=multipart_data.content_type
+            )
 
     return web_app
