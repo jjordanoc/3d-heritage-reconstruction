@@ -3,6 +3,10 @@ __pycache__/
 .vscode/
 .cursor/
 
-/frontend/public/*
+frontend/public/*
 
 models/
+
+.venv/
+
+node_modules
