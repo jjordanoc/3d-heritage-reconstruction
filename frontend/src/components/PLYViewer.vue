@@ -10,6 +10,17 @@ import { PLYLoader } from 'three/examples/jsm/loaders/PLYLoader.js'
 // Lee la base desde .env (VITE_API_BASE_URL). Si está vacío, usa same-origin (ideal si proxéas /pointcloud en Nginx/Vite).
 const API_BASE = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/+$/, '')
 
+// Utilidad: base64 → ArrayBuffer
+function base64ToArrayBuffer(b64) {
+  const comma = b64.indexOf(',')
+  const raw = comma >= 0 ? b64.slice(comma + 1) : b64
+  const bin = atob(raw)
+  const len = bin.length
+  const bytes = new Uint8Array(len)
+  for (let i = 0; i < len; i++) bytes[i] = bin.charCodeAt(i)
+  return bytes.buffer
+}
+
 export default {
   name: 'PLYViewer',
   data() {
@@ -59,21 +70,6 @@ export default {
     orbit.enableAnimations = true
     orbit.dampingFactor = 0.1
 
-    // --- Interacción opcional: doble click para cambiar pivot ---
-    const raycaster = new THREE.Raycaster()
-    const mouse = new THREE.Vector2()
-    const onDblClick = (e) => {
-      const rect = renderer.domElement.getBoundingClientRect()
-      mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1
-      mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1
-      raycaster.setFromCamera(mouse, camera)
-      const hits = raycaster.intersectObjects(this._pickables, true)
-      if (hits.length) {
-        this._setPivot(hits[0].point)
-      }
-    }
-    renderer.domElement.addEventListener('dblclick', onDblClick)
-
     // --- Animación ---
     const animate = () => {
       this._raf = requestAnimationFrame(animate)
@@ -92,25 +88,23 @@ export default {
       orbit.update()
     }
     window.addEventListener('resize', onResize)
-    // Inicial
     onResize()
 
-    // --- Cargar PLY por ID desde la ruta ---
+    // --- Cargar dato por ID desde la ruta ---
     const id = this.$route.query.id ?? this.$route.params.id
-    if (id) this.loadPLYById(String(id)).catch(console.error)
+    if (id) this.loadById(String(id)).catch(console.error)
     else console.warn('[PLYViewer] No id in route (query/params).')
 
-    // Watch: si cambia el id en la URL, recarga el modelo
+    // Watch cambios de id
     this.$watch(() => this.$route.fullPath, () => {
       const newId = this.$route.query.id ?? this.$route.params.id
-      if (newId) this.loadPLYById(String(newId)).catch(console.error)
+      if (newId) this.loadById(String(newId)).catch(console.error)
     })
 
     // --- Limpieza ---
     this._cleanup = () => {
       cancelAnimationFrame(this._raf)
       window.removeEventListener('resize', onResize)
-      renderer.domElement.removeEventListener('dblclick', onDblClick)
       this._removeCurrentObject()
       orbit.dispose?.()
       renderer.dispose?.()
@@ -123,17 +117,66 @@ export default {
   },
 
   methods: {
-    async loadPLYById(id) {
-      const base = API_BASE // '' = same-origin (si tienes proxy /pointcloud)
+    /**
+     * Pide el JSON { point_cloud: ..., camera: 4x4 }.
+     * Admite point_cloud como:
+     *  - base64
+     */
+    async loadById(id) {
+      const base = API_BASE // '' = same-origin si proxéas
       const url = `${base}/pointcloud/${encodeURIComponent(id)}/latest`
 
       const res = await fetch(url)
-      if (!res.ok) throw new Error(`Error ${res.status} al obtener PLY para id=${id}`)
-      const buf = await res.arrayBuffer()
+      if (!res.ok) throw new Error(`HTTP ${res.status} al pedir ${url}`)
 
-      // Parsear
+      const ctype = res.headers.get('content-type') || ''
+      let cameraCv = null
+      let plyBuffer = null
+      let plyUrl = null
+
+      if (ctype.includes('application/json')) {
+        const json = await res.json()
+
+        // 1) obtener el PLY
+        if (typeof json.point_cloud === 'string') {
+          if (json.point_cloud.startsWith('http') || json.point_cloud.startsWith('/')) {
+            // URL directa
+            plyUrl = json.point_cloud
+          } else if (json.point_cloud.startsWith('data:') || /^[A-Za-z0-9+/]+=*$/.test(json.point_cloud)) {
+            // dataURL o base64 "puro"
+            plyBuffer = base64ToArrayBuffer(json.point_cloud)
+          }
+        } else {
+          console.warn('[PLYViewer] point_cloud no es string; espera URL o base64.')
+        }
+
+        // 2) cámara (OpenCV Camera-to-World 4x4)
+        if (Array.isArray(json.camera) && json.camera.length === 4 && json.camera.every(r => Array.isArray(r) && r.length === 4)) {
+          cameraCv = json.camera
+        }
+      } else {
+        // Fallback a binario PLY directo (compatibilidad con API antigua)
+        plyBuffer = await res.arrayBuffer()
+      }
+
+      // Cargar PLY -> Geometry
       const loader = new PLYLoader()
-      let geometry = loader.parse(buf)
+      let geometry
+      if (plyUrl) {
+        // usa "await load" con promesa
+        geometry = await new Promise((resolve, reject) => {
+          loader.load(
+            plyUrl,
+            g => resolve(g),
+            undefined,
+            err => reject(err)
+          )
+        })
+      } else if (plyBuffer) {
+        geometry = loader.parse(plyBuffer)
+      } else {
+        throw new Error('[PLYViewer] No se pudo obtener point_cloud (ni URL ni buffer)')
+      }
 
       // Crear objeto
       geometry.computeVertexNormals?.()
@@ -147,34 +190,86 @@ export default {
         object = new THREE.Mesh(geometry, mat)
       }
 
-      // Reemplazar si había otro
+      // Reemplazar y montar
       this._removeCurrentObject()
       this._scene.add(object)
       this._pickables = [object]
       this._currentObject = object
 
-      // Encajar cámara/pivot robusto
+      // Ajustar near/far en función del tamaño
       geometry.computeBoundingBox?.()
       const bbox = geometry.boundingBox
+      let center = new THREE.Vector3(0, 0, 0)
+      let maxDim = 1
       if (bbox) {
-        const center = new THREE.Vector3()
-        bbox.getCenter(center)
+        center = bbox.getCenter(new THREE.Vector3())
         const size = bbox.getSize(new THREE.Vector3())
-        const maxDim = Math.max(size.x, size.y, size.z) || 1
-
-        const fov = this._camera.fov * (Math.PI / 180)
-        let camDist = Math.abs(maxDim / (2 * Math.tan(fov / 2)))
-        camDist *= 1.5
-
-        this._camera.position.set(center.x, center.y, center.z + camDist)
+        maxDim = Math.max(size.x, size.y, size.z) || 1
         this._camera.near = Math.max(maxDim / 1000, 0.001)
         this._camera.far  = Math.max(maxDim * 100, 10)
-        this._camera.lookAt(center)
         this._camera.updateProjectionMatrix()
+      }
 
+      // Si viene cámara → aplicarla. Si no, encuadrar por bbox.
+      if (cameraCv) {
+        this._applyOpenCVCameraToWorld(cameraCv)
+      } else {
+        // Fallback: encuadrar por BBox
+        const fov = this._camera.fov * (Math.PI / 180)
+        let camDist = Math.abs(maxDim / (2 * Math.tan(fov / 2))) * 1.5
+        this._camera.position.set(center.x, center.y, center.z + camDist)
+        this._camera.lookAt(center)
         this._orbit.target.copy(center)
+        this._camera.updateProjectionMatrix()
         this._orbit.update()
       }
+    },
+
+    /**
+     * Aplica una matriz 4x4 Camera-to-World en convención OpenCV a Three.js.
+     * OpenCV: x→derecha, y→abajo, z→adelante
+     * Three:  x→derecha, y→arriba,  z→hacia el observador (cámara mira -Z)
+     *
+     * Conversión aproximada: M_three = C * M_cv * C, con C = diag(1, -1, -1, 1)
+     * Luego se asigna a camera.matrixWorld.
+     */
+    _applyOpenCVCameraToWorld(cv4x4) {
+      // 1) construir Matrix4 desde filas (row-major)
+      const a = cv4x4.flat()
+      const Mcv = new THREE.Matrix4().set(
+        a[0],  a[1],  a[2],  a[3],
+        a[4],  a[5],  a[6],  a[7],
+        a[8],  a[9],  a[10], a[11],
+        a[12], a[13], a[14], a[15]
+      )
+
+      // 2) cambio de base OpenCV->Three
+      const C = new THREE.Matrix4().set(
+        1,  0,  0, 0,
+        0, -1,  0, 0,
+        0,  0, -1, 0,
+        0,  0,  0, 1
+      )
+      const Mthree = new THREE.Matrix4().copy(C).multiply(Mcv).multiply(C)
+
+      // 3) aplicar a la cámara
+      this._camera.matrixAutoUpdate = false
+      this._camera.matrixWorld.copy(Mthree)
+      this._camera.matrixWorldNeedsUpdate = true
+
+      // 4) actualizar posición / target
+      this._camera.position.setFromMatrixPosition(Mthree)
+
+      // dirección hacia adelante de la cámara en Three es -Z local
+      const rot = new THREE.Matrix4().extractRotation(Mthree)
+      const forward = new THREE.Vector3(0, 0, -1).applyMatrix4(rot).normalize()
+
+      // coloca el target un poco delante de la cámara
+      const target = new THREE.Vector3().copy(this._camera.position).add(forward)
+      this._orbit.target.copy(target)
+      this._camera.lookAt(target)
+      this._camera.updateProjectionMatrix()
+      this._orbit.update()
     },
 
     _removeCurrentObject() {
@@ -204,7 +299,7 @@ export default {
   width: 100%;
   height: 100%;
   display: block;
-  background: #0b0d12; /* da contraste si el modelo es claro */
+  background: #0b0d12;
   overflow: hidden;
 }
 </style>
