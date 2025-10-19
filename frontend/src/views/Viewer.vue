@@ -1,11 +1,12 @@
-<!-- src/views/Viewer.vue -->
 <template>
   <div class="page">
     <Suspense>
       <template #default>
         <AsyncPLYViewer />
       </template>
-      <template #fallback>Cargando visor…</template>
+      <template #fallback>
+        <div class="loading">Cargando visor…</div>
+      </template>
     </Suspense>
   </div>
 </template>
@@ -18,8 +19,13 @@ const AsyncPLYViewer = defineAsyncComponent(() => import('@/components/PLYViewer
 <style scoped>
 .page {
   width: 100%;
-  height: 100vh;     /* <-- clave: que el contenedor del canvas tenga altura real */
-  display: flex;     /* opcional, por si quieres meter más cosas */
-  flex-direction: column;
+  height: 100vh;        /* ocupa todo el viewport */
+  background: #0b0d12;  /* consistente con el visor */
+  display: grid;
+  place-items: center;
+}
+.loading {
+  color: #e6e9ef;
+  font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
 }
 </style>

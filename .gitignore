@@ -4,6 +4,7 @@ __pycache__/
 .cursor/
 
 frontend/public/ply/*
+frontend/.env
 
 models/
 
