@@ -28,7 +28,7 @@ vol_mnt_loc = Path("/mnt/volume")
 @modal.asgi_app()
 def fastapi_app():
     from fastapi import FastAPI, Response, status
-    from fastapi.responses import JSONResponse
+    from fastapi.responses import JSONResponse, FileResponse
     from PIL import Image
     from fastapi import UploadFile, File, HTTPException
     import os
@@ -157,6 +157,17 @@ def fastapi_app():
 
     @web_app.get("/pointcloud/{pc_id}/{tag}")
     async def get_pointcloud(pc_id: str, tag: str):
-        
+        # dynamically point to latest PLY for the given project
+        ply_path = Path(vol_mnt_loc) / "backend_data" / "reconstructions" / pc_id / "models" / "latest.ply"
+
+        if not ply_path.exists():
+            return {"error": "Point cloud file not found."}
+
+        # Always serve the latest file on disk
+        return FileResponse(
+            path=str(ply_path),
+            filename=f"{pc_id}_{tag}.ply",
+            media_type="application/octet-stream"
+        )
 
     return web_app
