@@ -3,7 +3,7 @@ __pycache__/
 .vscode/
 .cursor/
 
-frontend/public/*
+frontend/public/ply/*
 
 models/
 
