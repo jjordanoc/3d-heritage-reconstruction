@@ -5,9 +5,13 @@ import * as THREE from 'three';
 import { ArcballControls } from 'three/examples/jsm/controls/ArcballControls.js';
 import { PLYLoader } from 'three/examples/jsm/loaders/PLYLoader.js';
 
-const PLYViewer = () => {
+interface PLYViewerProps {
+  plyUrl: string;
+}
+
+const PLYViewer = ({ plyUrl }: PLYViewerProps) => {
   const containerRef = useRef<HTMLDivElement>(null);
-  const rafRef = useRef<number>();
+  const rafRef = useRef<number | undefined>(undefined);
 
   useEffect(() => {
     if (typeof window === 'undefined' || !containerRef.current) {
@@ -48,9 +52,29 @@ const PLYViewer = () => {
     // --- Load PLY ---
     const pickables: THREE.Object3D[] = [];
     const loader = new PLYLoader();
-    loader.load(
-      '/auditorio.ply',
-      (geometry) => {
+
+    // Fetch PLY from remote URL, convert to blob, then load
+    let blobUrl: string | null = null;
+
+    fetch(plyUrl)
+      .then(response => {
+        if (!response.ok) {
+          throw new Error(`Failed to fetch PLY: ${response.statusText}`);
+        }
+        return response.blob();
+      })
+      .then(blob => {
+        blobUrl = URL.createObjectURL(blob);
+        return new Promise<THREE.BufferGeometry>((resolve, reject) => {
+          loader.load(
+            blobUrl!,
+            (geometry) => resolve(geometry),
+            undefined,
+            (err) => reject(err)
+          );
+        });
+      })
+      .then((geometry) => {
         geometry.computeVertexNormals?.();
 
         let object;
@@ -80,10 +104,10 @@ const PLYViewer = () => {
           setPivot(center);
           orbit.update();
         }
-      },
-      undefined,
-      (err) => console.error('PLY load error', err)
-    );
+      })
+      .catch((err) => {
+        console.error('PLY load error', err);
+      });
 
     // --- Double click: set pivot ---
     const raycaster = new THREE.Raycaster();
@@ -113,13 +137,13 @@ const PLYViewer = () => {
 
     function moveCameraAndTarget(deltaVec: THREE.Vector3) {
       camera.position.add(deltaVec);
-      orbit.target.add(deltaVec);
+      (orbit as any).target.add(deltaVec);
       orbit.update();
     }
 
     function setPivot(newPivot: THREE.Vector3) {
-      const camToPivot = new THREE.Vector3().subVectors(camera.position, orbit.target);
-      orbit.target.copy(newPivot);
+      const camToPivot = new THREE.Vector3().subVectors(camera.position, (orbit as any).target);
+      (orbit as any).target.copy(newPivot);
       camera.position.copy(newPivot).add(camToPivot);
       camera.updateProjectionMatrix();
       orbit.update();
@@ -185,11 +209,15 @@ const PLYViewer = () => {
       renderer.domElement.removeEventListener('dblclick', onDblClick);
       orbit.dispose?.();
       renderer.dispose();
-      if (container) {
+      if (container && container.contains(renderer.domElement)) {
         container.removeChild(renderer.domElement);
       }
+      // Clean up blob URL
+      if (blobUrl) {
+        URL.revokeObjectURL(blobUrl);
+      }
     };
-  }, []);
+  }, [plyUrl]);
 
   return <div ref={containerRef} style={{ width: '100%', height: '100%', position: 'relative' }}></div>;
 };
