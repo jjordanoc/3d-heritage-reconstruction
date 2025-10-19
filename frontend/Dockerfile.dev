@@ -1,0 +1,12 @@
+FROM node:20-alpine
+
+WORKDIR /app
+COPY package*.json ./
+RUN npm install
+
+# copia todo el código (o monta como volumen si usas compose)
+COPY . .
+
+EXPOSE 5173
+# Exponer host 0.0.0.0 para acceder desde tu máquina
+CMD ["npm", "run", "dev", "--", "--host", "0.0.0.0"]
