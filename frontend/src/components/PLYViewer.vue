@@ -51,7 +51,7 @@ export default {
     const pickables = []
     const loader = new PLYLoader()
     loader.load(
-      '/auditorio.ply',
+      '/ply/auditorio.ply',
       (geometry) => {
         geometry.computeVertexNormals?.()
 
