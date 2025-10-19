@@ -86,7 +86,7 @@ const categories = reactive([
     key: 'entornos',
     title: 'Reconstrucciones de Entornos',
     items: [
-      { id: 'auditorio-utec', title: 'Auditorio UTEC', subtitle: 'UTEC, Barranco', img: '/img/entornos/auditorio-utec.jpg' },
+      { id: 'auditorio', title: 'Auditorio UTEC', subtitle: 'UTEC, Barranco', img: '/img/entornos/auditorio-utec.jpg' },
     ],
   },
 ])
