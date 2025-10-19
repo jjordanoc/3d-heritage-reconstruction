@@ -231,7 +231,7 @@ def fastapi_app():
         process_infered_data_per_image(str(inference_path),id)
         
         return JSONResponse(
-                content={"status": "OK", "message": f"File {uploaded.name}.png  created successfully"},
+                content={"status": "OK", "message": f"File {uploaded.name}  created successfully"},
                 status_code=status.HTTP_200_OK)
 
     @web_app.get("/pointcloud/{pc_id}/{tag}")
