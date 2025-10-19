@@ -7,24 +7,41 @@ image = modal.Image.debian_slim().pip_install([])
 volume = modal.Volume.from_name("ut3c-heritage", create_if_missing=True)
 vol_mnt_loc = Path("/mnt/volume")
 
-app = modal.App(image=image)
+app = modal.App(image=image, volumes={vol_mnt_loc: volume})
 
 @app.function(image=image, volumes={vol_mnt_loc: volume})
-def reset_backend():
-    backend_path = vol_mnt_loc / "backend_data"
+def clear_auditorio_data():
+    """
+    Clears:
+      - /backend_data/reconstructions/auditorio/images
+      - /preds/*
+    while keeping the overall backend structure.
+    """
+    # --- Target 1: auditorio images ---
+    images_folder = vol_mnt_loc / "backend_data" / "reconstructions" / "auditorio" / "images"
+    if images_folder.exists() and images_folder.is_dir():
+        shutil.rmtree(images_folder)
+        print(f"Cleared folder: {images_folder}")
+    images_folder.mkdir(parents=True, exist_ok=True)
+    print(f"Recreated empty folder: {images_folder}")
 
-    if backend_path.exists() and backend_path.is_dir():
-        shutil.rmtree(backend_path)
-        print(f"Removed existing folder: {backend_path}")
+    # --- Target 2: preds ---
+    preds_folder = vol_mnt_loc / "preds"
+    print(preds_folder)
+    if preds_folder.exists() and preds_folder.is_dir():
+        shutil.rmtree(preds_folder)
+        print(f"Cleared folder: {preds_folder}")
+    preds_folder.mkdir(parents=True, exist_ok=True)
+    print(f"Recreated empty folder: {preds_folder}")
 
-    backend_path.mkdir(parents=True, exist_ok=True)
-    print(f"Created empty folder: {backend_path}")
-    return str(backend_path)
+    return {
+        "images_folder": str(images_folder),
+        "preds_folder": str(preds_folder)
+    }
 
 # Optional local test
 @app.local_entrypoint()
 def main():
-    print("Resetting backend remotely...")
-    # Runs in the Modal cloud, affects the mounted volume
-    path = reset_backend.remote()
-    print(f"Backend reset at: {path}")
+    print("Clearing auditorio images and preds remotely...")
+    result = clear_auditorio_data.remote()
+    print(f"Folders reset at:\n{result}")
