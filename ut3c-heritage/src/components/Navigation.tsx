@@ -20,8 +20,8 @@ const Navigation = () => {
             <Link
               href="/"
               className={`text-sm font-medium transition-colors ${isActive('/')
-                  ? 'text-blue-400'
-                  : 'text-black hover:text-blue-400'
+                ? 'text-blue-400'
+                : 'text-black hover:text-blue-400'
                 }`}
             >
               Home
@@ -29,8 +29,8 @@ const Navigation = () => {
             <Link
               href="/projects"
               className={`text-sm font-medium transition-colors ${isActive('/projects')
-                  ? 'text-blue-400'
-                  : 'text-black hover:text-blue-400'
+                ? 'text-blue-400'
+                : 'text-black hover:text-blue-400'
                 }`}
             >
               Projects
@@ -38,8 +38,8 @@ const Navigation = () => {
             <Link
               href="/viewer"
               className={`text-sm font-medium transition-colors ${isActive('/viewer')
-                  ? 'text-blue-400'
-                  : 'text-black hover:text-blue-400'
+                ? 'text-blue-400'
+                : 'text-black hover:text-blue-400'
                 }`}
             >
               3D Viewer
@@ -47,8 +47,8 @@ const Navigation = () => {
             <Link
               href="/about"
               className={`text-sm font-medium transition-colors ${isActive('/about')
-                  ? 'text-blue-400'
-                  : 'text-black hover:text-blue-400'
+                ? 'text-blue-400'
+                : 'text-black hover:text-blue-400'
                 }`}
             >
               About

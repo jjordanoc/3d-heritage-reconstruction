@@ -21,7 +21,7 @@ volume = modal.Volume.from_name(name="ut3c-heritage")
 
 
 #application stuff
-app = modal.App(image=image)
+app = modal.App("ut3c-heritage-backend", image=image)
 vol_mnt_loc = Path("/mnt/volume")
 @app.function(image=image,volumes={vol_mnt_loc:volume})
 @modal.concurrent(max_inputs=100)
@@ -31,6 +31,7 @@ def fastapi_app():
     from fastapi.responses import JSONResponse, FileResponse
     from PIL import Image
     from fastapi import UploadFile, File, HTTPException
+    from fastapi.middleware.cors import CORSMiddleware
     import os
     import uuid
     import io
@@ -39,6 +40,15 @@ def fastapi_app():
     import open3d as o3d
 
     web_app = FastAPI()
+    web_app.add_middleware(
+        CORSMiddleware,
+        allow_origins=[
+            "*"  # For testing - remove in production
+        ],
+        allow_credentials=True,
+        allow_methods=["*"],  # Allow all methods (GET, POST, etc.)
+        allow_headers=["*"],  # Allow all headers
+    )
     Pi3Remote = modal.Cls.from_name("pi3-inference", "ModelInference")
     inference_obj = Pi3Remote()
 
