@@ -130,5 +130,5 @@ class ModelInference:
 def test():
     """Test the endpoint locally"""
     model = ModelInference()
-    result_path = model.run_inference.remote("/data/auditorio/iphone13")
+    result_path = model.run_inference.remote("/data/auditorio/keyframes-resnet18")
     print(f"Predictions saved to: {result_path}")
