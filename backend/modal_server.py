@@ -60,6 +60,11 @@ def fastapi_app():
         print(f"Initialized folder: {folder_path}")
     
 
+    def simplify_cloud(cld):
+        cl, _ = cld.remove_statistical_outlier(20, 2.0)
+        return cl.voxel_down_sample(0.05)
+
+
     async def upload_image(id: str, file: UploadFile = File(...)):
         """
             Takes a project id and a file and preprocesses and puts the image 
@@ -146,6 +151,7 @@ def fastapi_app():
         pcd.colors = o3d.utility.Vector3dVector(colors_rgb / 255.0)
 
         # Save as PLY
+        pcd = simplify_cloud(pcd)
         o3d.io.write_point_cloud(pty_location, pcd)
         print(f"Saved PLY point cloud to {pty_location}")
         volume.commit()
