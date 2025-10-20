@@ -19,6 +19,9 @@
           <strong>Tips:</strong> Doble clic = fijar pivote · F = encuadrar · Shift=x3 · Ctrl=x0.25
         </div>
       </div>
+      <div class="row">
+        <button @click="manualRefresh" class="refresh-btn">🔄 Actualizar</button>
+      </div>
     </div>
   </div>
 </template>
@@ -110,6 +113,9 @@ export default {
       // Pivot viz
       _pivotMarker: null,
       _pivotAxes: null,
+
+      // Highlight timers for new points
+      _highlightTimers: [],
     }
   },
 
@@ -258,20 +264,21 @@ export default {
     window.addEventListener('resize', onResize)
     onResize()
 
-    // --- Cargar dato por ID desde la ruta ---
-    const id = this.$route?.query?.id ?? this.$route?.params?.id
-    if (id) this.loadById(String(id)).catch(console.error)
-    else console.warn('[PLYViewer] No id in route (query/params).')
+    // --- Auto-load disabled - use manual refresh button instead ---
+    // const id = this.$route?.query?.id ?? this.$route?.params?.id
+    // if (id) this.loadById(String(id)).catch(console.error)
+    // else console.warn('[PLYViewer] No id in route (query/params).')
 
-    // Watch cambios de id
-    this.$watch(() => this.$route?.fullPath, () => {
-      const newId = this.$route?.query?.id ?? this.$route?.params?.id
-      if (newId) this.loadById(String(newId)).catch(console.error)
-    })
+    // Auto-refetch on route changes also disabled
+    // this.$watch(() => this.$route?.fullPath, () => {
+    //   const newId = this.$route?.query?.id ?? this.$route?.params?.id
+    //   if (newId) this.loadById(String(newId)).catch(console.error)
+    // })
 
     // --- Limpieza ---
     this._cleanup = () => {
       cancelAnimationFrame(this._raf)
+      this._clearAllHighlights()
       window.removeEventListener('resize', onResize)
       document.removeEventListener('keydown', onKeyDown)
       document.removeEventListener('keyup', onKeyUp)
@@ -308,8 +315,11 @@ export default {
             const cameraPose = JSON.parse(parsed.camera_pose)
             if (Array.isArray(cameraPose) && cameraPose.length === 4 && cameraPose.every(r => Array.isArray(r) && r.length === 4)) {
               cameraCv = cameraPose
+              console.log('[PLYViewer] loadById received camera from multipart:', cameraPose)
             }
           } catch (e) { console.warn('[PLYViewer] Failed to parse camera_pose from multipart:', e) }
+        } else {
+          console.warn('[PLYViewer] No camera_pose in multipart response (loadById)')
         }
       } else if (ctype.includes('application/json')) {
         const json = await res.json()
@@ -321,6 +331,9 @@ export default {
         }
         if (Array.isArray(json.camera_pose) && json.camera_pose.length === 4 && json.camera_pose.every(r => Array.isArray(r) && r.length === 4)) {
           cameraCv = json.camera_pose
+          console.log('[PLYViewer] loadById received camera from JSON:', json.camera_pose)
+        } else {
+          console.warn('[PLYViewer] No valid camera_pose in JSON response (loadById)')
         }
       } else {
         plyBuffer = await res.arrayBuffer()
@@ -383,8 +396,10 @@ export default {
       if ('maxDistance' in this._orbit) this._orbit.maxDistance = Math.max(maxDim * 20, 10)
 
       if (cameraCv) {
+        console.log('[PLYViewer] loadById applying camera with animation')
         this._applyOpenCVCameraToWorld(cameraCv, true)
       } else {
+        console.log('[PLYViewer] No camera pose, framing to bbox')
         this._frameToBBox()
       }
       this._updatePivotViz()
@@ -402,8 +417,11 @@ export default {
             const cameraPose = JSON.parse(parsed.camera_pose)
             if (Array.isArray(cameraPose) && cameraPose.length === 4 && cameraPose.every(r => Array.isArray(r) && r.length === 4)) {
               cameraCv = cameraPose
+              console.log('[PLYViewer] addIncrementalPoints received camera:', cameraPose)
             }
           } catch (e) { console.warn('[PLYViewer] Failed to parse camera_pose:', e) }
+        } else {
+          console.warn('[PLYViewer] No camera_pose in multipart response')
         }
       } else {
         plyBuffer = arrayBuffer
@@ -438,6 +456,9 @@ export default {
       this._pickables.push(newObject)
       this._currentObject = newObject
 
+      // Highlight new points for 30 seconds
+      this._highlightNewObject(newObject, 30000)
+
       // BBox combinado
       for (const obj of this._pickables) {
         obj.geometry?.computeBoundingBox?.()
@@ -454,7 +475,12 @@ export default {
       if ('minDistance' in this._orbit) this._orbit.minDistance = Math.max(maxDimAll * 0.02, 0.001)
       if ('maxDistance' in this._orbit) this._orbit.maxDistance = Math.max(maxDimAll * 20, 10)
 
-      if (cameraCv) this._applyOpenCVCameraToWorld(cameraCv, true)
+      if (cameraCv) {
+        console.log('[PLYViewer] Applying camera animation to new camera pose')
+        this._applyOpenCVCameraToWorld(cameraCv, true)
+      } else {
+        console.warn('[PLYViewer] No camera pose provided for incremental points')
+      }
       this._updatePivotViz()
     },
 
@@ -665,6 +691,100 @@ export default {
 
     toggleAxes() { if (this._axes) this._axes.visible = this.showAxes },
     toggleGrid() { if (this._grid) this._grid.visible = this.showGrid },
+
+    // ===== Manual Refresh =====
+    manualRefresh() {
+      const id = this.$route?.query?.id ?? this.$route?.params?.id
+      if (id) {
+        console.log('[PLYViewer] Manual refresh for id:', id)
+        this.loadById(String(id)).catch(console.error)
+      } else {
+        console.warn('[PLYViewer] No id found for manual refresh')
+      }
+    },
+
+    // ===== Highlight New Points =====
+    _highlightNewObject(object, durationMs = 30000) {
+      if (!object || !object.material) return
+
+      // Store original material properties
+      const material = object.material
+      const originalEmissive = material.emissive ? material.emissive.clone() : null
+      const originalEmissiveIntensity = material.emissiveIntensity ?? 0
+      const originalOpacity = material.opacity ?? 1
+      const originalTransparent = material.transparent ?? false
+      
+      // For Points, we'll pulse the opacity
+      // For Mesh, we'll pulse emissive
+      const isPoints = object instanceof THREE.Points
+      
+      if (isPoints) {
+        // For point clouds, pulse the material opacity
+        material.transparent = true
+        material.opacity = 1
+      } else {
+        // For meshes, add emissive glow
+        if (!material.emissive) material.emissive = new THREE.Color(0x00ffff)
+        else material.emissive.set(0x00ffff)
+        material.emissiveIntensity = 0.5
+      }
+
+      let phase = 0
+      const frequency = 3 // blinks per second
+
+      // Blink animation
+      const interval = setInterval(() => {
+        phase += 0.016 * frequency * Math.PI * 2 // ~60fps
+        const intensity = (Math.sin(phase) + 1) / 2 // 0 to 1
+
+        if (isPoints) {
+          material.opacity = 0.3 + intensity * 0.7 // pulse between 0.3 and 1
+        } else {
+          material.emissiveIntensity = intensity * 0.8
+        }
+      }, 16) // ~60fps
+
+      // Stop after duration and restore original material
+      const timeout = setTimeout(() => {
+        clearInterval(interval)
+        
+        if (isPoints) {
+          material.transparent = originalTransparent
+          material.opacity = originalOpacity
+        } else {
+          if (originalEmissive) material.emissive.copy(originalEmissive)
+          else material.emissive.set(0x000000)
+          material.emissiveIntensity = originalEmissiveIntensity
+        }
+
+        // Remove from timers array
+        const idx = this._highlightTimers.findIndex(t => t.interval === interval)
+        if (idx >= 0) this._highlightTimers.splice(idx, 1)
+      }, durationMs)
+
+      // Store for cleanup
+      this._highlightTimers.push({ interval, timeout, object })
+    },
+
+    _clearAllHighlights() {
+      for (const timer of this._highlightTimers) {
+        clearInterval(timer.interval)
+        clearTimeout(timer.timeout)
+        
+        // Restore material if object still exists
+        if (timer.object && timer.object.material) {
+          const mat = timer.object.material
+          if (timer.object instanceof THREE.Points) {
+            mat.transparent = false
+            mat.opacity = 1
+          } else {
+            mat.emissive?.set(0x000000)
+            mat.emissiveIntensity = 0
+          }
+        }
+      }
+      this._highlightTimers = []
+    },
   },
 }
 </script>
@@ -720,4 +840,30 @@ export default {
 
 .toggles { display: flex; gap: 16px; }
 .coords { margin-top: 6px; opacity: 0.95; font-variant-numeric: tabular-nums; }
+
+.refresh-btn {
+  width: 100%;
+  padding: 8px 12px;
+  background: rgba(59, 130, 246, 0.2);
+  border: 1px solid rgba(59, 130, 246, 0.4);
+  border-radius: 6px;
+  color: #93bbfd;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  font-family: inherit;
+}
+
+.refresh-btn:hover {
+  background: rgba(59, 130, 246, 0.3);
+  border-color: rgba(59, 130, 246, 0.6);
+  color: #bdd7ff;
+  transform: translateY(-1px);
+}
+
+.refresh-btn:active {
+  transform: translateY(0);
+  background: rgba(59, 130, 246, 0.4);
+}
 </style>
