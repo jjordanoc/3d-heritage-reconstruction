@@ -1,5 +1,26 @@
 <template>
-  <div ref="container" class="ply-root"></div>
+  <div ref="container" class="ply-root">
+    <!-- HUD / Controles -->
+    <div class="hud">
+      <div class="row">
+        <label>Velocidad</label>
+        <input type="range" min="0.2" max="20" step="0.1" v-model.number="moveSpeed" />
+        <span class="pill">{{ moveSpeed.toFixed(1) }} u/s</span>
+      </div>
+      <div class="row toggles">
+        <label><input type="checkbox" v-model="showPivot" @change="togglePivot"/> Pivot</label>
+        <label><input type="checkbox" v-model="showAxes" @change="toggleAxes"/> Ejes</label>
+        <label><input type="checkbox" v-model="showGrid" @change="toggleGrid"/> Grilla</label>
+      </div>
+      <div class="coords">
+        <div><strong>Cam:</strong> x {{ camPos.x.toFixed(3) }} | y {{ camPos.y.toFixed(3) }} | z {{ camPos.z.toFixed(3) }}</div>
+        <div><strong>Target:</strong> x {{ camTarget.x.toFixed(3) }} | y {{ camTarget.y.toFixed(3) }} | z {{ camTarget.z.toFixed(3) }}</div>
+        <div style="opacity:.85;margin-top:4px">
+          <strong>Tips:</strong> Doble clic = fijar pivote · F = encuadrar · Shift=x3 · Ctrl=x0.25
+        </div>
+      </div>
+    </div>
+  </div>
 </template>
 
 <script>
@@ -7,10 +28,8 @@ import * as THREE from 'three'
 import { ArcballControls } from 'three/examples/jsm/controls/ArcballControls.js'
 import { PLYLoader } from 'three/examples/jsm/loaders/PLYLoader.js'
 
-// Lee la base desde .env (VITE_API_BASE_URL). Si está vacío, usa same-origin (ideal si proxéas /pointcloud en Nginx/Vite).
 const API_BASE = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/+$/, '')
 
-// Utilidad: base64 → ArrayBuffer
 function base64ToArrayBuffer(b64) {
   const comma = b64.indexOf(',')
   const raw = comma >= 0 ? b64.slice(comma + 1) : b64
@@ -21,65 +40,37 @@ function base64ToArrayBuffer(b64) {
   return bytes.buffer
 }
 
-// Utilidad: parsear respuesta multipart/form-data
 function parseMultipartResponse(arrayBuffer, contentType) {
-  // Extraer boundary del content-type
   const boundaryMatch = contentType.match(/boundary=([^;]+)/)
-  if (!boundaryMatch) {
-    throw new Error('No boundary found in multipart content-type')
-  }
+  if (!boundaryMatch) throw new Error('No boundary found in multipart content-type')
   const boundary = '--' + boundaryMatch[1]
-  
-  // Convertir arrayBuffer a string para procesarlo
   const decoder = new TextDecoder('utf-8')
   const text = decoder.decode(arrayBuffer)
-  
-  // Dividir por boundary
   const parts = text.split(boundary).filter(p => p.trim() && !p.trim().startsWith('--'))
-  
   const result = {}
-  
   for (const part of parts) {
-    // Separar headers del body
     const headerEndIndex = part.indexOf('\r\n\r\n')
     if (headerEndIndex === -1) continue
-    
     const headers = part.substring(0, headerEndIndex)
     const body = part.substring(headerEndIndex + 4).replace(/\r\n$/, '')
-    
-    // Extraer nombre del campo
     const nameMatch = headers.match(/name="([^"]+)"/)
     if (!nameMatch) continue
-    
     const fieldName = nameMatch[1]
-    
-    // Si es pointcloud (binario), necesitamos el buffer original
     if (fieldName === 'pointcloud') {
-      // Encontrar el inicio del body en el buffer original
       const encoder = new TextEncoder()
-      const headerBytes = encoder.encode(part.substring(0, headerEndIndex + 4))
-      
-      // Buscar donde empieza este part en el buffer original
       const partStart = text.indexOf(part)
       const bodyStartInText = partStart + headerEndIndex + 4
-      
-      // Calcular offset en bytes (aproximado, asumiendo UTF-8)
       const bodyStartBytes = encoder.encode(text.substring(0, bodyStartInText)).length
-      
-      // Encontrar el final del body (antes del siguiente boundary o final)
       let bodyEndBytes = arrayBuffer.byteLength
       const nextBoundaryInText = text.indexOf(boundary, bodyStartInText)
       if (nextBoundaryInText !== -1) {
-        bodyEndBytes = encoder.encode(text.substring(0, nextBoundaryInText)).length - 2 // -2 para \r\n
+        bodyEndBytes = encoder.encode(text.substring(0, nextBoundaryInText)).length - 2
       }
-      
       result[fieldName] = arrayBuffer.slice(bodyStartBytes, bodyEndBytes)
     } else {
-      // Para campos de texto (camera_pose), parsearlo
       result[fieldName] = body
     }
   }
-  
   return result
 }
 
@@ -97,6 +88,28 @@ export default {
 
       _pickables: [],
       _currentObject: null,
+
+      // Helpers
+      _axes: null,
+      _grid: null,
+
+      // BBoxes
+      _worldBBox: new THREE.Box3(),      // BBox combinado
+      _clampBBox: new THREE.Box3(),      // BBox para clamping
+
+      // UI state
+      moveSpeed: 3.5,
+      showPivot: true,                   // <--- por defecto ON
+      showAxes: true,
+      showGrid: true,
+
+      // HUD coords
+      camPos: new THREE.Vector3(),
+      camTarget: new THREE.Vector3(),
+
+      // Pivot viz
+      _pivotMarker: null,
+      _pivotAxes: null,
     }
   },
 
@@ -117,7 +130,7 @@ export default {
 
     const renderer = this._renderer = new THREE.WebGLRenderer({ antialias: true })
     renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2))
-    renderer.setSize(container.clientWidth || 1, container.clientHeight || 1, false)
+    renderer.setSize(container.clientWidth || 1, container.clientHeight || 1, true)
     container.appendChild(renderer.domElement)
 
     // --- Luces ---
@@ -130,64 +143,104 @@ export default {
     const orbit = this._orbit = new ArcballControls(camera, renderer.domElement, scene)
     orbit.setGizmosVisible(false)
     orbit.enableAnimations = true
-    orbit.dampingFactor = 0.1
+    orbit.dampingFactor = 0.12
+    if ('minDistance' in orbit) orbit.minDistance = 0.01
+    if ('maxDistance' in orbit) orbit.maxDistance = 1e6
+    if ('zoomSpeed' in orbit) orbit.zoomSpeed = 0.8
 
-    // --- WASD Controls ---
+    // --- Helpers ---
+    this._createHelpers(1)
+
+    // --- Pivot visual (amarillo y gordito) ---
+    this._createPivotViz()
+    this._updatePivotViz()
+
+    // --- WASD + modificadores ---
     const keys = {
       KeyW: false, KeyA: false, KeyS: false, KeyD: false,
-      Space: false, ShiftLeft: false, ShiftRight: false
+      Space: false, ShiftLeft: false, ShiftRight: false,
+      ControlLeft: false, ControlRight: false,
+      KeyQ: false, KeyE: false
     }
-    
     const onKeyDown = (e) => {
-      if (e.code in keys) {
-        keys[e.code] = true
-      }
+      if (e.code in keys) keys[e.code] = true
+      if (e.code === 'Equal') this.moveSpeed = Math.min(this.moveSpeed + 0.5, 50)
+      if (e.code === 'Minus') this.moveSpeed = Math.max(this.moveSpeed - 0.5, 0.1)
+      if (e.code === 'KeyF') this._frameToBBox()
     }
-    
-    const onKeyUp = (e) => {
-      if (e.code in keys) {
-        keys[e.code] = false
-      }
-    }
-    
+    const onKeyUp = (e) => { if (e.code in keys) keys[e.code] = false }
     document.addEventListener('keydown', onKeyDown)
     document.addEventListener('keyup', onKeyUp)
 
-    // --- Animación con delta time ---
+    // --- Doble clic: fijar pivote con raycast ---
+    const onDblClick = (ev) => {
+      if (!this._pickables.length) return
+      const rect = renderer.domElement.getBoundingClientRect()
+      const ndc = new THREE.Vector2(
+        ((ev.clientX - rect.left) / rect.width) * 2 - 1,
+        -(((ev.clientY - rect.top) / rect.height) * 2 - 1)
+      )
+      const raycaster = new THREE.Raycaster()
+      raycaster.setFromCamera(ndc, camera)
+      const intersects = raycaster.intersectObjects(this._pickables, true)
+      if (intersects.length) {
+        const p = intersects[0].point
+        this._setPivot(p)      // mueve el target ahí
+        this._updatePivotViz() // <-- actualiza para que lo veas ya
+      }
+    }
+    renderer.domElement.addEventListener('dblclick', onDblClick)
+
+    // --- Animación ---
     const clock = new THREE.Clock()
-    const moveSpeed = 3.5
     const upVec = new THREE.Vector3(0, 1, 0)
     const tmpFwd = new THREE.Vector3()
     const tmpRight = new THREE.Vector3()
-    
+
     const animate = () => {
       this._raf = requestAnimationFrame(animate)
       const dt = clock.getDelta()
-      
-      // Actualizar controles WASD con delta time
-      if (keys.KeyW || keys.KeyS || keys.KeyA || keys.KeyD || keys.Space || keys.ShiftLeft || keys.ShiftRight) {
-        // Asegurar que la cámara puede actualizarse
+
+      // velocidad
+      let speed = this.moveSpeed
+      const fast = keys.ShiftLeft || keys.ShiftRight
+      const precise = keys.ControlLeft || keys.ControlRight
+      if (fast) speed *= 3.0
+      if (precise) speed *= 0.25
+
+      if (keys.KeyW || keys.KeyS || keys.KeyA || keys.KeyD || keys.Space || keys.ShiftLeft || keys.ShiftRight || keys.KeyQ || keys.KeyE) {
         camera.matrixAutoUpdate = true
-        
         camera.getWorldDirection(tmpFwd).normalize()
         tmpRight.copy(tmpFwd).cross(upVec).normalize()
-        
-        const vel = moveSpeed * dt
+
+        const vel = speed * dt
         const delta = new THREE.Vector3()
-        
-        if (keys.KeyW) delta.addScaledVector(tmpFwd, vel)
+
+        if (keys.KeyW) delta.addScaledVector(tmpFwd,  vel)
         if (keys.KeyS) delta.addScaledVector(tmpFwd, -vel)
         if (keys.KeyA) delta.addScaledVector(tmpRight, -vel)
-        if (keys.KeyD) delta.addScaledVector(tmpRight, vel)
-        if (keys.Space) delta.addScaledVector(upVec, vel)
-        if (keys.ShiftLeft || keys.ShiftRight) delta.addScaledVector(upVec, -vel)
-        
+        if (keys.KeyD) delta.addScaledVector(tmpRight,  vel)
+        if (keys.Space || keys.KeyE) delta.addScaledVector(upVec,    vel)
+        if (keys.ShiftLeft || keys.ShiftRight || keys.KeyQ) delta.addScaledVector(upVec, -vel)
+
         camera.position.add(delta)
         orbit.target.add(delta)
         camera.updateProjectionMatrix()
-        orbit.update()
       }
-      
+
+      // Clamp del target
+      if (!this._clampBBox.isEmpty()) {
+        const clamped = this._clampBBox.clampPoint(orbit.target, new THREE.Vector3())
+        orbit.target.copy(clamped)
+      }
+
+      // HUD
+      this.camPos.copy(camera.position)
+      this.camTarget.copy(orbit.target)
+
+      // Pivot viz
+      this._updatePivotViz()
+
       orbit.update()
       renderer.render(scene, camera)
     }
@@ -199,20 +252,20 @@ export default {
       const h = Math.max(container.clientHeight, 1)
       camera.aspect = w / h
       camera.updateProjectionMatrix()
-      renderer.setSize(w, h, false)
+      renderer.setSize(w, h, true)
       orbit.update()
     }
     window.addEventListener('resize', onResize)
     onResize()
 
     // --- Cargar dato por ID desde la ruta ---
-    const id = this.$route.query.id ?? this.$route.params.id
+    const id = this.$route?.query?.id ?? this.$route?.params?.id
     if (id) this.loadById(String(id)).catch(console.error)
     else console.warn('[PLYViewer] No id in route (query/params).')
 
     // Watch cambios de id
-    this.$watch(() => this.$route.fullPath, () => {
-      const newId = this.$route.query.id ?? this.$route.params.id
+    this.$watch(() => this.$route?.fullPath, () => {
+      const newId = this.$route?.query?.id ?? this.$route?.params?.id
       if (newId) this.loadById(String(newId)).catch(console.error)
     })
 
@@ -222,28 +275,22 @@ export default {
       window.removeEventListener('resize', onResize)
       document.removeEventListener('keydown', onKeyDown)
       document.removeEventListener('keyup', onKeyUp)
+      renderer.domElement.removeEventListener('dblclick', onDblClick)
       this._removeCurrentObject()
+      this._disposeHelpers()
+      this._disposePivotViz()
       orbit.dispose?.()
       renderer.dispose?.()
       if (container.contains(renderer.domElement)) container.removeChild(renderer.domElement)
     }
   },
 
-  beforeUnmount() {
-    this._cleanup && this._cleanup()
-  },
+  beforeUnmount() { this._cleanup && this._cleanup() },
 
   methods: {
-    /**
-     * Pide el JSON { pointcloud: ..., camera: 4x4 } o multipart.
-     * Admite pointcloud como:
-     *  - base64
-     *  - multipart/form-data
-     */
     async loadById(id) {
-      const base = API_BASE // '' = same-origin si proxéas
+      const base = API_BASE
       const url = `${base}/pointcloud/${encodeURIComponent(id)}/latest`
-
       const res = await fetch(url)
       if (!res.ok) throw new Error(`HTTP ${res.status} al pedir ${url}`)
 
@@ -253,61 +300,37 @@ export default {
       let plyUrl = null
 
       if (ctype.includes('multipart/form-data')) {
-        // Nueva API: multipart con pointcloud y camera_pose
         const buffer = await res.arrayBuffer()
         const parsed = parseMultipartResponse(buffer, ctype)
-        
-        if (parsed.pointcloud) {
-          plyBuffer = parsed.pointcloud
-        }
-        
+        if (parsed.pointcloud) plyBuffer = parsed.pointcloud
         if (parsed.camera_pose) {
           try {
             const cameraPose = JSON.parse(parsed.camera_pose)
             if (Array.isArray(cameraPose) && cameraPose.length === 4 && cameraPose.every(r => Array.isArray(r) && r.length === 4)) {
               cameraCv = cameraPose
             }
-          } catch (e) {
-            console.warn('[PLYViewer] Failed to parse camera_pose from multipart:', e)
-          }
+          } catch (e) { console.warn('[PLYViewer] Failed to parse camera_pose from multipart:', e) }
         }
       } else if (ctype.includes('application/json')) {
         const json = await res.json()
-
-        // 1) obtener el PLY
         if (typeof json.pointcloud === 'string') {
-          if (json.pointcloud.startsWith('http') || json.pointcloud.startsWith('/')) {
-            // URL directa
-            plyUrl = json.pointcloud
-          } else if (json.pointcloud.startsWith('data:') || /^[A-Za-z0-9+/]+=*$/.test(json.pointcloud)) {
-            // dataURL o base64 "puro"
-            plyBuffer = base64ToArrayBuffer(json.pointcloud)
-          }
+          if (json.pointcloud.startsWith('http') || json.pointcloud.startsWith('/')) plyUrl = json.pointcloud
+          else if (json.pointcloud.startsWith('data:') || /^[A-Za-z0-9+/]+=*$/.test(json.pointcloud)) plyBuffer = base64ToArrayBuffer(json.pointcloud)
         } else {
           console.warn('[PLYViewer] pointcloud no es string; espera URL o base64.')
         }
-
-        // 2) cámara (OpenCV Camera-to-World 4x4)
         if (Array.isArray(json.camera_pose) && json.camera_pose.length === 4 && json.camera_pose.every(r => Array.isArray(r) && r.length === 4)) {
           cameraCv = json.camera_pose
         }
       } else {
-        // Fallback a binario PLY directo (compatibilidad con API antigua)
         plyBuffer = await res.arrayBuffer()
       }
 
-      // Cargar PLY -> Geometry
       const loader = new PLYLoader()
       let geometry
       if (plyUrl) {
-        // usa "await load" con promesa
         geometry = await new Promise((resolve, reject) => {
-          loader.load(
-            plyUrl,
-            g => resolve(g),
-            undefined,
-            err => reject(err)
-          )
+          loader.load(plyUrl, g => resolve(g), undefined, err => reject(err))
         })
       } else if (plyBuffer) {
         geometry = loader.parse(plyBuffer)
@@ -315,31 +338,23 @@ export default {
         throw new Error('[PLYViewer] No se pudo obtener pointcloud (ni URL ni buffer)')
       }
 
-      // Crear objeto
       geometry.computeVertexNormals?.()
-      
-      // Calcular bounding box una sola vez
       geometry.computeBoundingBox?.()
+
       const bbox = geometry.boundingBox
       let center = new THREE.Vector3(0, 0, 0)
       let maxDim = 1
-      let pointSize = 0.02 // tamaño base más grande
-      
+      let pointSize = 0.02
       if (bbox) {
         center = bbox.getCenter(new THREE.Vector3())
         const size = bbox.getSize(new THREE.Vector3())
         maxDim = Math.max(size.x, size.y, size.z) || 1
-        // Ajustar el tamaño del punto según el tamaño de la escena (0.5% del tamaño máximo)
         pointSize = maxDim * 0.005
       }
-      
+
       let object
       if (geometry.getAttribute && geometry.getAttribute('color')) {
-        const mat = new THREE.PointsMaterial({ 
-          size: pointSize, 
-          vertexColors: true, 
-          sizeAttenuation: true 
-        })
+        const mat = new THREE.PointsMaterial({ size: pointSize, vertexColors: true, sizeAttenuation: true })
         object = new THREE.Points(geometry, mat)
         object.raycast = THREE.Points.prototype.raycast
       } else {
@@ -347,160 +362,120 @@ export default {
         object = new THREE.Mesh(geometry, mat)
       }
 
-      // Reemplazar y montar
       this._removeCurrentObject()
       this._scene.add(object)
       this._pickables = [object]
       this._currentObject = object
 
-      // Ajustar near/far en función del tamaño (ya calculado)
+      // BBoxes globales
+      this._worldBBox.makeEmpty()
+      if (object.geometry?.boundingBox) this._worldBBox.union(object.geometry.boundingBox)
+      this._updateClampBBox()
+
+      // Helpers al tamaño
+      this._recalibrateHelpers(maxDim)
+
+      // near/far y límites de distancia
       this._camera.near = Math.max(maxDim / 1000, 0.001)
       this._camera.far  = Math.max(maxDim * 100, 10)
       this._camera.updateProjectionMatrix()
+      if ('minDistance' in this._orbit) this._orbit.minDistance = Math.max(maxDim * 0.02, 0.001)
+      if ('maxDistance' in this._orbit) this._orbit.maxDistance = Math.max(maxDim * 20, 10)
 
-      // Si viene cámara → aplicarla. Si no, encuadrar por bbox.
       if (cameraCv) {
         this._applyOpenCVCameraToWorld(cameraCv, true)
-        console.log('[PLYViewer] Cámara aplicada')
       } else {
-        // Fallback: encuadrar por BBox
-        const fov = this._camera.fov * (Math.PI / 180)
-        let camDist = Math.abs(maxDim / (2 * Math.tan(fov / 2))) * 1.5
-        this._camera.position.set(center.x, center.y, center.z + camDist)
-        this._camera.lookAt(center)
-        this._orbit.target.copy(center)
-        this._camera.updateProjectionMatrix()
-        this._orbit.update()
-        console.log('[PLYViewer] Encuadrado por BBox')
+        this._frameToBBox()
       }
+      this._updatePivotViz()
     },
 
-    /**
-     * Método para agregar puntos incrementales desde POST
-     * FUSIONA los nuevos puntos con los existentes (no reemplaza)
-     */
     async addIncrementalPoints(arrayBuffer, contentType) {
-      console.log('[PLYViewer] Adding incremental points...')
-      
-      // Parsear respuesta multipart
       let plyBuffer = null
       let cameraCv = null
-      
+
       if (contentType.includes('multipart/form-data')) {
         const parsed = parseMultipartResponse(arrayBuffer, contentType)
-        
-        if (parsed.pointcloud) {
-          plyBuffer = parsed.pointcloud
-        }
-        
+        if (parsed.pointcloud) plyBuffer = parsed.pointcloud
         if (parsed.camera_pose) {
           try {
             const cameraPose = JSON.parse(parsed.camera_pose)
             if (Array.isArray(cameraPose) && cameraPose.length === 4 && cameraPose.every(r => Array.isArray(r) && r.length === 4)) {
               cameraCv = cameraPose
-              console.log('[PLYViewer] Parsed camera pose:', cameraPose)
             }
-          } catch (e) {
-            console.warn('[PLYViewer] Failed to parse camera_pose:', e)
-          }
+          } catch (e) { console.warn('[PLYViewer] Failed to parse camera_pose:', e) }
         }
       } else {
-        // Fallback: asumir que es el PLY directo
         plyBuffer = arrayBuffer
       }
-      
-      if (!plyBuffer) {
-        console.error('[PLYViewer] No pointcloud data in response')
-        return
-      }
-      
-      // Cargar geometría desde buffer
+      if (!plyBuffer) { console.error('[PLYViewer] No pointcloud data in response'); return }
+
       const loader = new PLYLoader()
       const geometry = loader.parse(plyBuffer)
       geometry.computeVertexNormals?.()
-      
-      // Calcular tamaño de punto adaptativo basado en la escena
       geometry.computeBoundingBox?.()
+
       const bbox = geometry.boundingBox
-      let pointSize = 0.02 // tamaño base más grande
+      let pointSize = 0.02
+      let maxDimNew = 1
       if (bbox) {
         const size = bbox.getSize(new THREE.Vector3())
-        const maxDim = Math.max(size.x, size.y, size.z) || 1
-        // Ajustar el tamaño del punto según el tamaño de la escena
-        pointSize = maxDim * 0.005 // 0.5% del tamaño máximo
+        maxDimNew = Math.max(size.x, size.y, size.z) || 1
+        pointSize = maxDimNew * 0.005
       }
-      
-      // Crear objeto nuevo
+
       let newObject
       if (geometry.getAttribute && geometry.getAttribute('color')) {
-        const mat = new THREE.PointsMaterial({ 
-          size: pointSize, 
-          vertexColors: true, 
-          sizeAttenuation: true 
-        })
+        const mat = new THREE.PointsMaterial({ size: pointSize, vertexColors: true, sizeAttenuation: true })
         newObject = new THREE.Points(geometry, mat)
         newObject.raycast = THREE.Points.prototype.raycast
       } else {
         const mat = new THREE.MeshStandardMaterial({ color: 0xaaaaaa, flatShading: false })
         newObject = new THREE.Mesh(geometry, mat)
       }
-      
-      // AGREGAR a la escena (no reemplazar)
+
       this._scene.add(newObject)
       this._pickables.push(newObject)
-      // Mantener referencia al último objeto añadido
       this._currentObject = newObject
-      
-      console.log(`[PLYViewer] Now have ${this._pickables.length} point cloud objects in scene`)
-      
-      // Calcular bounding box combinado de todos los objetos
-      const combinedBox = new THREE.Box3()
+
+      // BBox combinado
       for (const obj of this._pickables) {
-        if (obj.geometry) {
-          obj.geometry.computeBoundingBox?.()
-          if (obj.geometry.boundingBox) {
-            combinedBox.union(obj.geometry.boundingBox)
-          }
-        }
+        obj.geometry?.computeBoundingBox?.()
+        if (obj.geometry?.boundingBox) this._worldBBox.union(obj.geometry.boundingBox)
       }
-      
-      // Ajustar near/far basado en el tamaño total
-      let center = new THREE.Vector3(0, 0, 0)
-      let maxDim = 1
-      if (!combinedBox.isEmpty()) {
-        center = combinedBox.getCenter(new THREE.Vector3())
-        const size = combinedBox.getSize(new THREE.Vector3())
-        maxDim = Math.max(size.x, size.y, size.z) || 1
-        this._camera.near = Math.max(maxDim / 1000, 0.001)
-        this._camera.far  = Math.max(maxDim * 100, 10)
-        this._camera.updateProjectionMatrix()
-      }
-      
-      // SIEMPRE aplicar cámara con animación si está disponible
-      if (cameraCv) {
-        console.log('[PLYViewer] Applying camera with animation')
-        this._applyOpenCVCameraToWorld(cameraCv, true) // true = animar SIEMPRE
-      } else {
-        console.warn('[PLYViewer] No camera pose provided, keeping current view')
-        // No cambiar la cámara si no hay pose
-      }
-      
-      console.log('[PLYViewer] Incremental points added successfully')
+      this._updateClampBBox()
+
+      // near/far y límites de distancia
+      const sizeAll = this._worldBBox.getSize(new THREE.Vector3())
+      const maxDimAll = Math.max(sizeAll.x, sizeAll.y, sizeAll.z) || 1
+      this._camera.near = Math.max(maxDimAll / 1000, 0.001)
+      this._camera.far  = Math.max(maxDimAll * 100, 10)
+      this._camera.updateProjectionMatrix()
+      if ('minDistance' in this._orbit) this._orbit.minDistance = Math.max(maxDimAll * 0.02, 0.001)
+      if ('maxDistance' in this._orbit) this._orbit.maxDistance = Math.max(maxDimAll * 20, 10)
+
+      if (cameraCv) this._applyOpenCVCameraToWorld(cameraCv, true)
+      this._updatePivotViz()
     },
 
-    /**
-     * Aplica una matriz 4x4 Camera-to-World en convención OpenCV a Three.js.
-     * OpenCV: x→derecha, y→abajo, z→adelante
-     * Three:  x→derecha, y→arriba,  z→hacia el observador (cámara mira -Z)
-     *
-     * Conversión aproximada: M_three = C * M_cv * C, con C = diag(1, -1, -1, 1)
-     * Luego se asigna a camera.matrixWorld.
-     * 
-     * @param {Array} cv4x4 - matriz 4x4 de cámara en convención OpenCV
-     * @param {Boolean} animate - si true, anima la transición de cámara
-     */
+    // === Utilidades de cámara ===
+    _frameToBBox() {
+      if (this._worldBBox.isEmpty()) return
+      const center = this._worldBBox.getCenter(new THREE.Vector3())
+      const size = this._worldBBox.getSize(new THREE.Vector3())
+      const maxDim = Math.max(size.x, size.y, size.z) || 1
+      const fov = this._camera.fov * (Math.PI / 180)
+      const camDist = Math.abs(maxDim / (2 * Math.tan(fov / 2))) * 1.35
+      this._camera.matrixAutoUpdate = true
+      this._camera.position.set(center.x, center.y, center.z + camDist)
+      this._orbit.target.copy(center)
+      this._camera.updateProjectionMatrix()
+      if ('minDistance' in this._orbit) this._orbit.minDistance = Math.max(maxDim * 0.02, 0.001)
+      if ('maxDistance' in this._orbit) this._orbit.maxDistance = Math.max(maxDim * 20, 10)
+      this._updatePivotViz()
+    },
+
     _applyOpenCVCameraToWorld(cv4x4, animate = false) {
-      // 1) construir Matrix4 desde filas (row-major)
       const a = cv4x4.flat()
       const Mcv = new THREE.Matrix4().set(
         a[0],  a[1],  a[2],  a[3],
@@ -508,8 +483,6 @@ export default {
         a[8],  a[9],  a[10], a[11],
         a[12], a[13], a[14], a[15]
       )
-
-      // 2) cambio de base OpenCV->Three
       const C = new THREE.Matrix4().set(
         1,  0,  0, 0,
         0, -1,  0, 0,
@@ -518,52 +491,37 @@ export default {
       )
       const Mthree = new THREE.Matrix4().copy(C).multiply(Mcv).multiply(C)
 
-      // 3) calcular nueva posición y target
       const newPosition = new THREE.Vector3().setFromMatrixPosition(Mthree)
       const rot = new THREE.Matrix4().extractRotation(Mthree)
       const forward = new THREE.Vector3(0, 0, -1).applyMatrix4(rot).normalize()
       const newTarget = new THREE.Vector3().copy(newPosition).add(forward)
 
       if (animate) {
-        console.log('[PLYViewer] Starting camera animation...')
-        console.log('[PLYViewer] From:', this._camera.position.toArray())
-        console.log('[PLYViewer] To:', newPosition.toArray())
-        
-        // Asegurar que la cámara puede actualizarse durante la animación
         this._camera.matrixAutoUpdate = true
-        
-        // Animación suave de la cámara
         const startPosition = this._camera.position.clone()
         const startTarget = this._orbit.target.clone()
-        const duration = 1500 // 1.5 segundos (más visible)
+        const duration = 1000
         const startTime = Date.now()
-        
         const animateCamera = () => {
           const elapsed = Date.now() - startTime
           const t = Math.min(elapsed / duration, 1)
-          // Easing suave (ease-in-out)
           const eased = t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t
-          
           this._camera.position.lerpVectors(startPosition, newPosition, eased)
           this._orbit.target.lerpVectors(startTarget, newTarget, eased)
           this._camera.lookAt(this._orbit.target)
           this._camera.updateProjectionMatrix()
           this._orbit.update()
-          
-          if (t < 1) {
-            requestAnimationFrame(animateCamera)
-          } else {
-            // Al finalizar, establecer matriz final
-            console.log('[PLYViewer] Camera animation complete!')
+          if (t < 1) requestAnimationFrame(animateCamera)
+          else {
             this._camera.matrixAutoUpdate = false
             this._camera.matrixWorld.copy(Mthree)
             this._camera.matrixWorldNeedsUpdate = true
             this._orbit.update()
+            this._updatePivotViz()
           }
         }
         animateCamera()
       } else {
-        // Aplicación inmediata
         this._camera.matrixAutoUpdate = false
         this._camera.matrixWorld.copy(Mthree)
         this._camera.matrixWorldNeedsUpdate = true
@@ -572,11 +530,11 @@ export default {
         this._camera.lookAt(newTarget)
         this._camera.updateProjectionMatrix()
         this._orbit.update()
+        this._updatePivotViz()
       }
     },
 
     _removeCurrentObject() {
-      // Remover TODOS los objetos acumulados, no solo el actual
       for (const obj of this._pickables) {
         this._scene.remove(obj)
         obj.geometry?.dispose?.()
@@ -586,7 +544,8 @@ export default {
       }
       this._currentObject = null
       this._pickables = []
-      console.log('[PLYViewer] Removed all point cloud objects from scene')
+      this._worldBBox.makeEmpty()
+      this._updateClampBBox()
     },
 
     _setPivot(newPivot) {
@@ -595,17 +554,170 @@ export default {
       this._camera.position.copy(newPivot).add(camToPivot)
       this._camera.updateProjectionMatrix()
       this._orbit.update()
+      this._updatePivotViz()
     },
+
+    // ===== Helpers (Axes + Grid) =====
+    _createHelpers(size = 1) {
+      this._axes = new THREE.AxesHelper(size)
+      this._axes.visible = this.showAxes
+      this._scene.add(this._axes)
+
+      this._grid = new THREE.GridHelper(size * 10, 10)
+      this._grid.material.opacity = 0.25
+      this._grid.material.transparent = true
+      this._grid.visible = this.showGrid
+      this._scene.add(this._grid)
+    },
+
+    _disposeHelpers() {
+      if (this._axes) { this._scene.remove(this._axes); this._axes.geometry?.dispose?.(); this._axes = null }
+      if (this._grid) {
+        this._scene.remove(this._grid)
+        this._grid.geometry?.dispose?.()
+        Array.isArray(this._grid.material) ? this._grid.material.forEach(m => m.dispose?.()) : this._grid.material?.dispose?.()
+        this._grid = null
+      }
+    },
+
+    _recalibrateHelpers(maxDim) {
+      const size = Math.max(maxDim, 1)
+      const axesVis = this.showAxes
+      const gridVis = this.showGrid
+      this._disposeHelpers()
+      this._createHelpers(size * 0.5)
+      if (this._grid) {
+        const gridSize = Math.max(size * 5, 1)
+        const divisions = 10
+        this._scene.remove(this._grid)
+        this._grid.geometry?.dispose?.()
+        Array.isArray(this._grid.material) ? this._grid.material.forEach(m => m.dispose?.()) : this._grid.material?.dispose?.()
+        this._grid = new THREE.GridHelper(gridSize, divisions)
+        this._grid.material.opacity = 0.25
+        this._grid.material.transparent = true
+        this._scene.add(this._grid)
+      }
+      if (this._axes) this._axes.visible = axesVis
+      if (this._grid) this._grid.visible = gridVis
+    },
+
+    _updateClampBBox() {
+      if (this._worldBBox.isEmpty()) {
+        this._clampBBox.makeEmpty()
+        return
+      }
+      const size = this._worldBBox.getSize(new THREE.Vector3())
+      const pad = Math.max(size.x, size.y, size.z) * 0.2
+      this._clampBBox.copy(this._worldBBox).expandByScalar(pad)
+    },
+
+    // ===== Pivot viz =====
+    _createPivotViz() {
+      if (!this._scene) return
+      // esfera amarilla bien visible (gordita)
+      const geo = new THREE.SphereGeometry(0.05, 24, 16) // radio grande
+      const mat = new THREE.MeshBasicMaterial({ color: 0xffff00 }) // amarillo brillante
+      this._pivotMarker = new THREE.Mesh(geo, mat)
+      this._pivotMarker.visible = this.showPivot
+      this._scene.add(this._pivotMarker)
+
+      // mini ejes en el pivote
+      this._pivotAxes = new THREE.AxesHelper(0.15)
+      this._pivotAxes.visible = this.showPivot
+      this._scene.add(this._pivotAxes)
+    },
+
+    _updatePivotViz() {
+      if (!this._pivotMarker || !this._pivotAxes || !this._orbit || !this._camera) return
+      const t = this._orbit.target
+      // posicionar
+      this._pivotMarker.position.copy(t)
+      this._pivotAxes.position.copy(t)
+      // mantener tamaño suficiente en pantalla (ligera adaptación con distancia)
+      const dist = this._camera.position.distanceTo(t) || 1
+      const k = THREE.MathUtils.clamp(dist * 0.02, 0.5, 4.0) // factor de escala
+      this._pivotMarker.scale.setScalar(k)                   // esfera gordita
+      this._pivotAxes.scale.setScalar(k * 1.2)               // ejes un poco mayores
+      // toggle
+      this._pivotMarker.visible = this.showPivot
+      this._pivotAxes.visible = this.showPivot
+    },
+
+    _disposePivotViz() {
+      if (this._pivotMarker) {
+        this._scene.remove(this._pivotMarker)
+        this._pivotMarker.geometry?.dispose?.()
+        this._pivotMarker.material?.dispose?.()
+        this._pivotMarker = null
+      }
+      if (this._pivotAxes) {
+        this._scene.remove(this._pivotAxes)
+        this._pivotAxes.geometry?.dispose?.()
+        this._pivotAxes = null
+      }
+    },
+
+    togglePivot() {
+      if (!this._pivotMarker || !this._pivotAxes) return
+      this._pivotMarker.visible = this.showPivot
+      this._pivotAxes.visible = this.showPivot
+    },
+
+    toggleAxes() { if (this._axes) this._axes.visible = this.showAxes },
+    toggleGrid() { if (this._grid) this._grid.visible = this.showGrid },
   },
 }
 </script>
 
 <style scoped>
 .ply-root {
-  width: 100%;
-  height: 100%;
+  position: absolute;
+  width: 100% !important;
+  height: 100% !important;
   display: block;
   background: #0b0d12;
   overflow: hidden;
 }
+
+/* Asegura que el canvas calce exacto en el contenedor */
+.ply-root > canvas {
+  position: absolute;
+  inset: 0;
+  width: 100% !important;
+  height: 100% !important;
+  display: block;
+}
+
+/* HUD y controles */
+.hud {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  min-width: 260px;
+  max-width: 42vw;
+  background: rgba(10, 12, 18, 0.7);
+  backdrop-filter: blur(4px);
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 12px;
+  padding: 10px 12px;
+  color: #e9eefc;
+  font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, 'Helvetica Neue', Arial, 'Noto Sans', 'Liberation Sans', sans-serif;
+  font-size: 12px;
+  line-height: 1.3;
+  user-select: none;
+}
+
+.row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.row label { opacity: 0.9; min-width: 64px; }
+.row input[type="range"] { flex: 1; }
+
+.pill {
+  padding: 2px 6px;
+  background: rgba(255,255,255,0.1);
+  border-radius: 999px;
+  font-variant-numeric: tabular-nums;
+}
+
+.toggles { display: flex; gap: 16px; }
+.coords { margin-top: 6px; opacity: 0.95; font-variant-numeric: tabular-nums; }
 </style>
