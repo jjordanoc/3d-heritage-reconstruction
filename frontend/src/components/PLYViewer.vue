@@ -132,9 +132,62 @@ export default {
     orbit.enableAnimations = true
     orbit.dampingFactor = 0.1
 
-    // --- Animación ---
+    // --- WASD Controls ---
+    const keys = {
+      KeyW: false, KeyA: false, KeyS: false, KeyD: false,
+      Space: false, ShiftLeft: false, ShiftRight: false
+    }
+    
+    const onKeyDown = (e) => {
+      if (e.code in keys) {
+        keys[e.code] = true
+      }
+    }
+    
+    const onKeyUp = (e) => {
+      if (e.code in keys) {
+        keys[e.code] = false
+      }
+    }
+    
+    document.addEventListener('keydown', onKeyDown)
+    document.addEventListener('keyup', onKeyUp)
+
+    // --- Animación con delta time ---
+    const clock = new THREE.Clock()
+    const moveSpeed = 3.5
+    const upVec = new THREE.Vector3(0, 1, 0)
+    const tmpFwd = new THREE.Vector3()
+    const tmpRight = new THREE.Vector3()
+    
     const animate = () => {
       this._raf = requestAnimationFrame(animate)
+      const dt = clock.getDelta()
+      
+      // Actualizar controles WASD con delta time
+      if (keys.KeyW || keys.KeyS || keys.KeyA || keys.KeyD || keys.Space || keys.ShiftLeft || keys.ShiftRight) {
+        // Asegurar que la cámara puede actualizarse
+        camera.matrixAutoUpdate = true
+        
+        camera.getWorldDirection(tmpFwd).normalize()
+        tmpRight.copy(tmpFwd).cross(upVec).normalize()
+        
+        const vel = moveSpeed * dt
+        const delta = new THREE.Vector3()
+        
+        if (keys.KeyW) delta.addScaledVector(tmpFwd, vel)
+        if (keys.KeyS) delta.addScaledVector(tmpFwd, -vel)
+        if (keys.KeyA) delta.addScaledVector(tmpRight, -vel)
+        if (keys.KeyD) delta.addScaledVector(tmpRight, vel)
+        if (keys.Space) delta.addScaledVector(upVec, vel)
+        if (keys.ShiftLeft || keys.ShiftRight) delta.addScaledVector(upVec, -vel)
+        
+        camera.position.add(delta)
+        orbit.target.add(delta)
+        camera.updateProjectionMatrix()
+        orbit.update()
+      }
+      
       orbit.update()
       renderer.render(scene, camera)
     }
@@ -167,6 +220,8 @@ export default {
     this._cleanup = () => {
       cancelAnimationFrame(this._raf)
       window.removeEventListener('resize', onResize)
+      document.removeEventListener('keydown', onKeyDown)
+      document.removeEventListener('keyup', onKeyUp)
       this._removeCurrentObject()
       orbit.dispose?.()
       renderer.dispose?.()
@@ -305,7 +360,8 @@ export default {
 
       // Si viene cámara → aplicarla. Si no, encuadrar por bbox.
       if (cameraCv) {
-        this._applyOpenCVCameraToWorld(cameraCv)
+        this._applyOpenCVCameraToWorld(cameraCv, true)
+        console.log('[PLYViewer] Cámara aplicada')
       } else {
         // Fallback: encuadrar por BBox
         const fov = this._camera.fov * (Math.PI / 180)
@@ -315,6 +371,7 @@ export default {
         this._orbit.target.copy(center)
         this._camera.updateProjectionMatrix()
         this._orbit.update()
+        console.log('[PLYViewer] Encuadrado por BBox')
       }
     },
 
@@ -468,10 +525,17 @@ export default {
       const newTarget = new THREE.Vector3().copy(newPosition).add(forward)
 
       if (animate) {
+        console.log('[PLYViewer] Starting camera animation...')
+        console.log('[PLYViewer] From:', this._camera.position.toArray())
+        console.log('[PLYViewer] To:', newPosition.toArray())
+        
+        // Asegurar que la cámara puede actualizarse durante la animación
+        this._camera.matrixAutoUpdate = true
+        
         // Animación suave de la cámara
         const startPosition = this._camera.position.clone()
         const startTarget = this._orbit.target.clone()
-        const duration = 1000 // 1 segundo
+        const duration = 1500 // 1.5 segundos (más visible)
         const startTime = Date.now()
         
         const animateCamera = () => {
@@ -490,9 +554,11 @@ export default {
             requestAnimationFrame(animateCamera)
           } else {
             // Al finalizar, establecer matriz final
+            console.log('[PLYViewer] Camera animation complete!')
             this._camera.matrixAutoUpdate = false
             this._camera.matrixWorld.copy(Mthree)
             this._camera.matrixWorldNeedsUpdate = true
+            this._orbit.update()
           }
         }
         animateCamera()
