@@ -219,7 +219,7 @@ def fastapi_app():
         pcd.colors = o3d.utility.Vector3dVector(colors_rgb / 255.0)
 
         # Save as PLY
-        pcd = simplify_cloud(pcd)
+        # pcd = simplify_cloud(pcd)
         o3d.io.write_point_cloud(pty_location, pcd)
         print(f"Saved PLY point cloud to {pty_location}")
         volume.commit()

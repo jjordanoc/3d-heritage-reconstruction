@@ -21,6 +21,68 @@ function base64ToArrayBuffer(b64) {
   return bytes.buffer
 }
 
+// Utilidad: parsear respuesta multipart/form-data
+function parseMultipartResponse(arrayBuffer, contentType) {
+  // Extraer boundary del content-type
+  const boundaryMatch = contentType.match(/boundary=([^;]+)/)
+  if (!boundaryMatch) {
+    throw new Error('No boundary found in multipart content-type')
+  }
+  const boundary = '--' + boundaryMatch[1]
+  
+  // Convertir arrayBuffer a string para procesarlo
+  const decoder = new TextDecoder('utf-8')
+  const text = decoder.decode(arrayBuffer)
+  
+  // Dividir por boundary
+  const parts = text.split(boundary).filter(p => p.trim() && !p.trim().startsWith('--'))
+  
+  const result = {}
+  
+  for (const part of parts) {
+    // Separar headers del body
+    const headerEndIndex = part.indexOf('\r\n\r\n')
+    if (headerEndIndex === -1) continue
+    
+    const headers = part.substring(0, headerEndIndex)
+    const body = part.substring(headerEndIndex + 4).replace(/\r\n$/, '')
+    
+    // Extraer nombre del campo
+    const nameMatch = headers.match(/name="([^"]+)"/)
+    if (!nameMatch) continue
+    
+    const fieldName = nameMatch[1]
+    
+    // Si es pointcloud (binario), necesitamos el buffer original
+    if (fieldName === 'pointcloud') {
+      // Encontrar el inicio del body en el buffer original
+      const encoder = new TextEncoder()
+      const headerBytes = encoder.encode(part.substring(0, headerEndIndex + 4))
+      
+      // Buscar donde empieza este part en el buffer original
+      const partStart = text.indexOf(part)
+      const bodyStartInText = partStart + headerEndIndex + 4
+      
+      // Calcular offset en bytes (aproximado, asumiendo UTF-8)
+      const bodyStartBytes = encoder.encode(text.substring(0, bodyStartInText)).length
+      
+      // Encontrar el final del body (antes del siguiente boundary o final)
+      let bodyEndBytes = arrayBuffer.byteLength
+      const nextBoundaryInText = text.indexOf(boundary, bodyStartInText)
+      if (nextBoundaryInText !== -1) {
+        bodyEndBytes = encoder.encode(text.substring(0, nextBoundaryInText)).length - 2 // -2 para \r\n
+      }
+      
+      result[fieldName] = arrayBuffer.slice(bodyStartBytes, bodyEndBytes)
+    } else {
+      // Para campos de texto (camera_pose), parsearlo
+      result[fieldName] = body
+    }
+  }
+  
+  return result
+}
+
 export default {
   name: 'PLYViewer',
   data() {
@@ -118,9 +180,10 @@ export default {
 
   methods: {
     /**
-     * Pide el JSON { point_cloud: ..., camera: 4x4 }.
-     * Admite point_cloud como:
+     * Pide el JSON { pointcloud: ..., camera: 4x4 } o multipart.
+     * Admite pointcloud como:
      *  - base64
+     *  - multipart/form-data
      */
     async loadById(id) {
       const base = API_BASE // '' = same-origin si proxéas
@@ -134,25 +197,44 @@ export default {
       let plyBuffer = null
       let plyUrl = null
 
-      if (ctype.includes('application/json')) {
+      if (ctype.includes('multipart/form-data')) {
+        // Nueva API: multipart con pointcloud y camera_pose
+        const buffer = await res.arrayBuffer()
+        const parsed = parseMultipartResponse(buffer, ctype)
+        
+        if (parsed.pointcloud) {
+          plyBuffer = parsed.pointcloud
+        }
+        
+        if (parsed.camera_pose) {
+          try {
+            const cameraPose = JSON.parse(parsed.camera_pose)
+            if (Array.isArray(cameraPose) && cameraPose.length === 4 && cameraPose.every(r => Array.isArray(r) && r.length === 4)) {
+              cameraCv = cameraPose
+            }
+          } catch (e) {
+            console.warn('[PLYViewer] Failed to parse camera_pose from multipart:', e)
+          }
+        }
+      } else if (ctype.includes('application/json')) {
         const json = await res.json()
 
         // 1) obtener el PLY
-        if (typeof json.point_cloud === 'string') {
-          if (json.point_cloud.startsWith('http') || json.point_cloud.startsWith('/')) {
+        if (typeof json.pointcloud === 'string') {
+          if (json.pointcloud.startsWith('http') || json.pointcloud.startsWith('/')) {
             // URL directa
-            plyUrl = json.point_cloud
-          } else if (json.point_cloud.startsWith('data:') || /^[A-Za-z0-9+/]+=*$/.test(json.point_cloud)) {
+            plyUrl = json.pointcloud
+          } else if (json.pointcloud.startsWith('data:') || /^[A-Za-z0-9+/]+=*$/.test(json.pointcloud)) {
             // dataURL o base64 "puro"
-            plyBuffer = base64ToArrayBuffer(json.point_cloud)
+            plyBuffer = base64ToArrayBuffer(json.pointcloud)
           }
         } else {
-          console.warn('[PLYViewer] point_cloud no es string; espera URL o base64.')
+          console.warn('[PLYViewer] pointcloud no es string; espera URL o base64.')
         }
 
         // 2) cámara (OpenCV Camera-to-World 4x4)
-        if (Array.isArray(json.camera) && json.camera.length === 4 && json.camera.every(r => Array.isArray(r) && r.length === 4)) {
-          cameraCv = json.camera
+        if (Array.isArray(json.camera_pose) && json.camera_pose.length === 4 && json.camera_pose.every(r => Array.isArray(r) && r.length === 4)) {
+          cameraCv = json.camera_pose
         }
       } else {
         // Fallback a binario PLY directo (compatibilidad con API antigua)
@@ -175,14 +257,34 @@ export default {
       } else if (plyBuffer) {
         geometry = loader.parse(plyBuffer)
       } else {
-        throw new Error('[PLYViewer] No se pudo obtener point_cloud (ni URL ni buffer)')
+        throw new Error('[PLYViewer] No se pudo obtener pointcloud (ni URL ni buffer)')
       }
 
       // Crear objeto
       geometry.computeVertexNormals?.()
+      
+      // Calcular bounding box una sola vez
+      geometry.computeBoundingBox?.()
+      const bbox = geometry.boundingBox
+      let center = new THREE.Vector3(0, 0, 0)
+      let maxDim = 1
+      let pointSize = 0.02 // tamaño base más grande
+      
+      if (bbox) {
+        center = bbox.getCenter(new THREE.Vector3())
+        const size = bbox.getSize(new THREE.Vector3())
+        maxDim = Math.max(size.x, size.y, size.z) || 1
+        // Ajustar el tamaño del punto según el tamaño de la escena (0.5% del tamaño máximo)
+        pointSize = maxDim * 0.005
+      }
+      
       let object
       if (geometry.getAttribute && geometry.getAttribute('color')) {
-        const mat = new THREE.PointsMaterial({ size: 0.01, vertexColors: true, sizeAttenuation: true })
+        const mat = new THREE.PointsMaterial({ 
+          size: pointSize, 
+          vertexColors: true, 
+          sizeAttenuation: true 
+        })
         object = new THREE.Points(geometry, mat)
         object.raycast = THREE.Points.prototype.raycast
       } else {
@@ -196,19 +298,10 @@ export default {
       this._pickables = [object]
       this._currentObject = object
 
-      // Ajustar near/far en función del tamaño
-      geometry.computeBoundingBox?.()
-      const bbox = geometry.boundingBox
-      let center = new THREE.Vector3(0, 0, 0)
-      let maxDim = 1
-      if (bbox) {
-        center = bbox.getCenter(new THREE.Vector3())
-        const size = bbox.getSize(new THREE.Vector3())
-        maxDim = Math.max(size.x, size.y, size.z) || 1
-        this._camera.near = Math.max(maxDim / 1000, 0.001)
-        this._camera.far  = Math.max(maxDim * 100, 10)
-        this._camera.updateProjectionMatrix()
-      }
+      // Ajustar near/far en función del tamaño (ya calculado)
+      this._camera.near = Math.max(maxDim / 1000, 0.001)
+      this._camera.far  = Math.max(maxDim * 100, 10)
+      this._camera.updateProjectionMatrix()
 
       // Si viene cámara → aplicarla. Si no, encuadrar por bbox.
       if (cameraCv) {
@@ -226,14 +319,130 @@ export default {
     },
 
     /**
+     * Método para agregar puntos incrementales desde POST
+     * FUSIONA los nuevos puntos con los existentes (no reemplaza)
+     */
+    async addIncrementalPoints(arrayBuffer, contentType) {
+      console.log('[PLYViewer] Adding incremental points...')
+      
+      // Parsear respuesta multipart
+      let plyBuffer = null
+      let cameraCv = null
+      
+      if (contentType.includes('multipart/form-data')) {
+        const parsed = parseMultipartResponse(arrayBuffer, contentType)
+        
+        if (parsed.pointcloud) {
+          plyBuffer = parsed.pointcloud
+        }
+        
+        if (parsed.camera_pose) {
+          try {
+            const cameraPose = JSON.parse(parsed.camera_pose)
+            if (Array.isArray(cameraPose) && cameraPose.length === 4 && cameraPose.every(r => Array.isArray(r) && r.length === 4)) {
+              cameraCv = cameraPose
+              console.log('[PLYViewer] Parsed camera pose:', cameraPose)
+            }
+          } catch (e) {
+            console.warn('[PLYViewer] Failed to parse camera_pose:', e)
+          }
+        }
+      } else {
+        // Fallback: asumir que es el PLY directo
+        plyBuffer = arrayBuffer
+      }
+      
+      if (!plyBuffer) {
+        console.error('[PLYViewer] No pointcloud data in response')
+        return
+      }
+      
+      // Cargar geometría desde buffer
+      const loader = new PLYLoader()
+      const geometry = loader.parse(plyBuffer)
+      geometry.computeVertexNormals?.()
+      
+      // Calcular tamaño de punto adaptativo basado en la escena
+      geometry.computeBoundingBox?.()
+      const bbox = geometry.boundingBox
+      let pointSize = 0.02 // tamaño base más grande
+      if (bbox) {
+        const size = bbox.getSize(new THREE.Vector3())
+        const maxDim = Math.max(size.x, size.y, size.z) || 1
+        // Ajustar el tamaño del punto según el tamaño de la escena
+        pointSize = maxDim * 0.005 // 0.5% del tamaño máximo
+      }
+      
+      // Crear objeto nuevo
+      let newObject
+      if (geometry.getAttribute && geometry.getAttribute('color')) {
+        const mat = new THREE.PointsMaterial({ 
+          size: pointSize, 
+          vertexColors: true, 
+          sizeAttenuation: true 
+        })
+        newObject = new THREE.Points(geometry, mat)
+        newObject.raycast = THREE.Points.prototype.raycast
+      } else {
+        const mat = new THREE.MeshStandardMaterial({ color: 0xaaaaaa, flatShading: false })
+        newObject = new THREE.Mesh(geometry, mat)
+      }
+      
+      // AGREGAR a la escena (no reemplazar)
+      this._scene.add(newObject)
+      this._pickables.push(newObject)
+      // Mantener referencia al último objeto añadido
+      this._currentObject = newObject
+      
+      console.log(`[PLYViewer] Now have ${this._pickables.length} point cloud objects in scene`)
+      
+      // Calcular bounding box combinado de todos los objetos
+      const combinedBox = new THREE.Box3()
+      for (const obj of this._pickables) {
+        if (obj.geometry) {
+          obj.geometry.computeBoundingBox?.()
+          if (obj.geometry.boundingBox) {
+            combinedBox.union(obj.geometry.boundingBox)
+          }
+        }
+      }
+      
+      // Ajustar near/far basado en el tamaño total
+      let center = new THREE.Vector3(0, 0, 0)
+      let maxDim = 1
+      if (!combinedBox.isEmpty()) {
+        center = combinedBox.getCenter(new THREE.Vector3())
+        const size = combinedBox.getSize(new THREE.Vector3())
+        maxDim = Math.max(size.x, size.y, size.z) || 1
+        this._camera.near = Math.max(maxDim / 1000, 0.001)
+        this._camera.far  = Math.max(maxDim * 100, 10)
+        this._camera.updateProjectionMatrix()
+      }
+      
+      // SIEMPRE aplicar cámara con animación si está disponible
+      if (cameraCv) {
+        console.log('[PLYViewer] Applying camera with animation')
+        this._applyOpenCVCameraToWorld(cameraCv, true) // true = animar SIEMPRE
+      } else {
+        console.warn('[PLYViewer] No camera pose provided, keeping current view')
+        // No cambiar la cámara si no hay pose
+      }
+      
+      console.log('[PLYViewer] Incremental points added successfully')
+    },
+
+    /**
      * Aplica una matriz 4x4 Camera-to-World en convención OpenCV a Three.js.
      * OpenCV: x→derecha, y→abajo, z→adelante
      * Three:  x→derecha, y→arriba,  z→hacia el observador (cámara mira -Z)
      *
      * Conversión aproximada: M_three = C * M_cv * C, con C = diag(1, -1, -1, 1)
      * Luego se asigna a camera.matrixWorld.
+     * 
+     * @param {Array} cv4x4 - matriz 4x4 de cámara en convención OpenCV
+     * @param {Boolean} animate - si true, anima la transición de cámara
      */
-    _applyOpenCVCameraToWorld(cv4x4) {
+    _applyOpenCVCameraToWorld(cv4x4, animate = false) {
       // 1) construir Matrix4 desde filas (row-major)
       const a = cv4x4.flat()
       const Mcv = new THREE.Matrix4().set(
@@ -252,35 +461,66 @@ export default {
       )
       const Mthree = new THREE.Matrix4().copy(C).multiply(Mcv).multiply(C)
 
-      // 3) aplicar a la cámara
-      this._camera.matrixAutoUpdate = false
-      this._camera.matrixWorld.copy(Mthree)
-      this._camera.matrixWorldNeedsUpdate = true
-
-      // 4) actualizar posición / target
-      this._camera.position.setFromMatrixPosition(Mthree)
-
-      // dirección hacia adelante de la cámara en Three es -Z local
+      // 3) calcular nueva posición y target
+      const newPosition = new THREE.Vector3().setFromMatrixPosition(Mthree)
       const rot = new THREE.Matrix4().extractRotation(Mthree)
       const forward = new THREE.Vector3(0, 0, -1).applyMatrix4(rot).normalize()
+      const newTarget = new THREE.Vector3().copy(newPosition).add(forward)
 
-      // coloca el target un poco delante de la cámara
-      const target = new THREE.Vector3().copy(this._camera.position).add(forward)
-      this._orbit.target.copy(target)
-      this._camera.lookAt(target)
-      this._camera.updateProjectionMatrix()
-      this._orbit.update()
+      if (animate) {
+        // Animación suave de la cámara
+        const startPosition = this._camera.position.clone()
+        const startTarget = this._orbit.target.clone()
+        const duration = 1000 // 1 segundo
+        const startTime = Date.now()
+        
+        const animateCamera = () => {
+          const elapsed = Date.now() - startTime
+          const t = Math.min(elapsed / duration, 1)
+          // Easing suave (ease-in-out)
+          const eased = t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t
+          
+          this._camera.position.lerpVectors(startPosition, newPosition, eased)
+          this._orbit.target.lerpVectors(startTarget, newTarget, eased)
+          this._camera.lookAt(this._orbit.target)
+          this._camera.updateProjectionMatrix()
+          this._orbit.update()
+          
+          if (t < 1) {
+            requestAnimationFrame(animateCamera)
+          } else {
+            // Al finalizar, establecer matriz final
+            this._camera.matrixAutoUpdate = false
+            this._camera.matrixWorld.copy(Mthree)
+            this._camera.matrixWorldNeedsUpdate = true
+          }
+        }
+        animateCamera()
+      } else {
+        // Aplicación inmediata
+        this._camera.matrixAutoUpdate = false
+        this._camera.matrixWorld.copy(Mthree)
+        this._camera.matrixWorldNeedsUpdate = true
+        this._camera.position.copy(newPosition)
+        this._orbit.target.copy(newTarget)
+        this._camera.lookAt(newTarget)
+        this._camera.updateProjectionMatrix()
+        this._orbit.update()
+      }
     },
 
     _removeCurrentObject() {
-      if (!this._currentObject) return
-      this._scene.remove(this._currentObject)
-      this._currentObject.geometry?.dispose?.()
-      const m = this._currentObject.material
-      if (Array.isArray(m)) m.forEach(mm => mm?.dispose?.())
-      else m?.dispose?.()
+      // Remover TODOS los objetos acumulados, no solo el actual
+      for (const obj of this._pickables) {
+        this._scene.remove(obj)
+        obj.geometry?.dispose?.()
+        const m = obj.material
+        if (Array.isArray(m)) m.forEach(mm => mm?.dispose?.())
+        else m?.dispose?.()
+      }
       this._currentObject = null
       this._pickables = []
+      console.log('[PLYViewer] Removed all point cloud objects from scene')
     },
 
     _setPivot(newPivot) {

@@ -82,21 +82,30 @@ async function uploadFile() {
   }
 
   const form = new FormData()
-  form.append('image', selectedFile.value)
+  form.append('file', selectedFile.value) // backend espera 'file', no 'image'
 
   try {
-    const res = await fetch(`${API_BASE}/pointcloud/${encodeURIComponent(id)}/upload_image`, {
+    const res = await fetch(`${API_BASE}/pointcloud/${encodeURIComponent(id)}`, {
       method: 'POST',
       body: form,
     })
 
     if (!res.ok) throw new Error(`Error ${res.status}`)
-    const json = await res.json()
+    
+    // Obtener respuesta multipart
+    const contentType = res.headers.get('content-type') || ''
+    const buffer = await res.arrayBuffer()
 
-    // backend debe devolver: { "new_points": "<base64 o URL .ply>" }
-    if (json.new_points) {
-      await viewerRef.value?.addIncrementalPoints(json.new_points)
-    }
+    // Pasar al viewer para actualización incremental
+    await viewerRef.value?.addIncrementalPoints(buffer, contentType)
+    
+    // Programar GET completo después de 1 minuto
+    console.log('[Viewer] Scheduling full reconstruction fetch in 60 seconds...')
+    setTimeout(() => {
+      console.log('[Viewer] Fetching full reconstruction...')
+      viewerRef.value?.loadById(id)
+    }, 60000) // 60 segundos
+    
     discardFile()
   } catch (err) {
     console.error(err)
