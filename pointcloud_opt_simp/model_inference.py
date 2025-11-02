@@ -133,8 +133,10 @@ def runall(img_path,results_path):
         else:
             # Keep non-tensor values as they are
             cpu_dict[key] = value
-    torch.save(cpu_dict,results_path + "/predictions.pt")
+    torch.save(cpu_dict,results_path)
 
 @app.local_entrypoint()
 def main():
-    runall("./data/images_preprocessed","./data/predictions")
+    runall("./data/sample1","./data/predictions/sample1_results.pt")
+    runall("./data/sample2","./data/predictions/sample2_results.pt")
+    runall("./data/sample3","./data/predictions/sample3_results.pt")

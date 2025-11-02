@@ -1,6 +1,7 @@
 import open3d as o3d
 import torch
 import numpy
+import os
 
 # pointclouds, cam poses
 def make_pointclouds(model_output,threshold=0.3):
@@ -49,8 +50,14 @@ def make_pointclouds(model_output,threshold=0.3):
 
 
 if __name__ == "__main__":
-    model_preds = torch.load("./data/predictions/predictions.pt")
+    who = "sample3_results"
+    who = who.split(".")[0]
+    model_preds = torch.load(f"./data/predictions/{who}.pt")
+    os.mkdir(f"./data/pointclouds/{who}")
     pcds, cams = make_pointclouds(model_preds)
+    full_pcd = o3d.geometry.PointCloud()
     for i in range(len(pcds)):
-        o3d.io.write_point_cloud(f"./data/pointclouds/pc_{i}.ply",pcds[i])
-        numpy.save(f"./data/pointclouds/cam_{i}.npy", cams[i])
+        full_pcd = full_pcd + pcds[i]
+        o3d.io.write_point_cloud(f"./data/pointclouds/{who}/pc_{i}.ply",pcds[i])
+        numpy.save(f"./data/pointclouds/{who}/cam_{i}.npy", cams[i])
+    o3d.io.write_point_cloud(f"./data/pointclouds/{who}/pc_full.ply",full_pcd)
