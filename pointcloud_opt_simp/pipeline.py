@@ -1,24 +1,51 @@
 import open3d
 import typing
+import numpy
+import os
+from PIL import Image
+import math
+from torchvision import transforms
+import argparse
+import torch
+import modal
+from modal_inference_function import PI3Model
 
 
 ### TEST FUNCTIONS 
 
-def do_inference(images):
-    pass
+def run_inference(tensor_imgs):
+    app_stub = modal.App.lookup("model_inference_ramtensors")
+    print(dir(app_stub))
+    model_stub = app_stub.PI3Model()
+    predictions = model_stub.run_inference.remote(tensor_imgs)
+    print("Inference complete. Received results locally.")
+    return predictions
 
-def to_simplified_pc(pointclouds: list[open3d.geometry.PointCloud]) -> open3d.geometry.PointCloud:
+def tensorize_images(images):
+    transform = transforms.ToTensor()
+    tensors = torch.stack([transform(img) for img in images],dim=0)
+    return tensors
+
+def do_inference(images):
+    tensor_imgs = tensorize_images(images)
+    inference = run_inference(tensor_imgs)
+    return inference
+
+def unify_pointcloud(pointclouds: list[open3d.geometry.PointCloud]) -> open3d.geometry.PointCloud:
     full_pc = open3d.geometry.PointCloud()
     for pc in pointclouds:
         full_pc += pc
     return full_pc
 
-def do_registration(pointcloudspointclouds: list[open3d.geometry.PointCloud],
+def do_registration(new_ply: open3d.geometry.PointCloud,
                     last_ply: open3d.geometry.PointCloud) -> open3d.geometry.PointCloud:
     """
 
     Computes the appropiate transformation matrix to take the newest inference
-    (pc1) to the old one's coordinate system
+    (concat(pointclouds)) to the old one's (last_ply) coordinate system.
+    Arguments:
+    pointclouds: List of latest pointclouds per image
+    last_ply: point cloud of the newest inference 
     """
     NORMAL_EST_KNN = 100
     DOWNSAMPLE = 500
@@ -28,7 +55,7 @@ def do_registration(pointcloudspointclouds: list[open3d.geometry.PointCloud],
     FGR_ITERS = 64
 
     # simplify plys
-    pc1_simple = to_simplified_pc(pointclouds)
+    pc1_simple = new_ply.uniform_down_sample(DOWNSAMPLE)
     pc2_simple = last_ply.uniform_down_sample(DOWNSAMPLE)
 
     #calculate required RANSAC stuff:
@@ -63,20 +90,113 @@ def do_registration(pointcloudspointclouds: list[open3d.geometry.PointCloud],
         option=fgr_option
     )
 
-    return 
+    return rough_reg_res.transformation
 
-def tensor_to_pointcloud(result_tensor):
-    return result_tensor
+def tensor_to_pointcloud(model_output,threshold=0.3):
+    pts = model_output["points"].squeeze(0)
+    colors = model_output["images"].squeeze(0)
+    confidence = model_output["conf"].squeeze(0)
+    cameras = model_output["camera_poses"].squeeze(0)
+
+
+    pcds = []
+    campos = []
+
+       
+    for i in range(pts.shape[0]):
+        # from x*y*3  tensor to (x*y)*3 to numpy
+        image_pts_raw = pts[i]
+        image_colors_raw = colors[i]
+        image_conf_raw = confidence[i]
+        flat_pts = image_pts_raw.reshape(-1, 3)
+        flat_colors = image_colors_raw.reshape(-1, 3)
+        flat_confidence = image_conf_raw.reshape(-1, 1)
+        img_pts = flat_pts.numpy()
+        img_col = flat_colors.numpy()
+        img_conf = flat_confidence.numpy()
+
+        #thresholding - building the threshold
+        threshmask = img_conf > threshold
+        threshmask = numpy.squeeze(threshmask)
+
+        #actually thresholding
+        #print(threshmask)
+        img_pts = img_pts[threshmask]
+        img_col = img_col[threshmask]
+
+        pcd = open3d.geometry.PointCloud()
+
+        pcd.points = open3d.utility.Vector3dVector(img_pts)
+        pcd.colors = open3d.utility.Vector3dVector(img_col)
+        
+        pcds.append(pcd)
+        campos.append(cameras[i].numpy())
+    return (pcds,campos)
 
 def run_pipeline(images,last_ply):
     result_tensor = do_inference(images)
-    pointclouds = tensor_to_pointcloud(result_tensor)
+    pointclouds, cameras = tensor_to_pointcloud(result_tensor)
     if (last_ply is not None):
         transform = do_registration(pointclouds,last_ply)
     return None,None
 
-def read_images(inPath,new_id):
-    return []
+def read_images(path:str,new_id:str,PIXEL_LIMIT=255000) -> list[Image.Image]:
+    """
+    Reads a directory's worth of images.. Makes sure that the last image in the returned list
+    is the image with name new_id. new_id may be the file name or the file name with extension.
+    Arguments:
+    path: A path to a directory with images. 
+    new_id: A file name with or without extension residing in that directory
+    PIXEL_LIMIT: a limit for the ammount of pixels sent to the model
+
+    Returns:
+    list[Image.Image]: a list of PIL images, where the last image is the image with file name new_id
+    """
+    sources = []
+    filenames = sorted([x for x in os.listdir(path) if x.lower().endswith(('.png', '.jpg', '.jpeg'))])
+    #Make sure new_id is the last image
+    new_id_filename = next((name for name in filenames 
+                            if os.path.splitext(name)[0] == new_id or name == new_id), 
+                        None)
+    if new_id_filename:
+        filenames.remove(new_id_filename)
+        filenames.append(new_id_filename)
+    else:
+        raise Exception("new_id no existe en el directorio especificado")
+    shape = 500
+    for i in range(0, len(filenames)):
+        img_path = os.path.join(path, filenames[i])
+        try:
+            sources.append(Image.open(img_path).convert('RGB'))
+        except:
+            print("Failed to load image {filenames[i]}")
+    #resize (copied from PI3)
+    first_img = sources[0]
+    W_orig, H_orig = first_img.size
+    scale = math.sqrt(PIXEL_LIMIT / (W_orig * H_orig)) if W_orig * H_orig > 0 else 1
+    W_target, H_target = W_orig * scale, H_orig * scale
+    k, m = round(W_target / 14), round(H_target / 14)
+    while (k * 14) * (m * 14) > PIXEL_LIMIT:
+        if k / m > W_target / H_target: k -= 1
+        else: m -= 1
+    TARGET_W, TARGET_H = max(1, k) * 14, max(1, m) * 14
+    print(f"All images will be resized to a uniform size: ({TARGET_W}, {TARGET_H})")
+
+    image_list = []
+    
+    for img_pil in sources[0:-1]: #avoid last image, if exception ocurs there the pipeline should fail
+        try:
+            # Resize to the uniform target size
+            resized_img = img_pil.resize((TARGET_W, TARGET_H), Image.Resampling.LANCZOS)
+            # Convert to tensor
+            image_list.append(resized_img)
+        except Exception as e:
+            print(f"Error processing an image: {e}")
+    #process last image and dont catch
+    resized_img = sources[-1].resize((TARGET_W, TARGET_H), Image.Resampling.LANCZOS)
+    image_list.append(resized_img)
+
+    return image_list
 
 def addImageToCollection(inPath,oldPly,new_id):
     """
@@ -97,13 +217,15 @@ def addImageToCollection(inPath,oldPly,new_id):
     """
     new_path = ""
     images = read_images(inPath,new_id)
-    last_ply = open3d.io.read_point_cloud(oldPly)
+
+    last_ply = None
+    if oldPly is not None:
+        last_ply = open3d.io.read_point_cloud(oldPly)
+
     point_estimates, cam_estimates = run_pipeline(images,last_ply)
     open3d.io.save_point_cloud(new_path + "/latest.ply")
     open3d.io.save_point_cloud(new_path + "/{i}.ply")
 
 
 if __name__ == "__main__":
-    import os
-    import shutil
-    for i
+    addImageToCollection("./data/sample_i/",None,"0020")
