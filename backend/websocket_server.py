@@ -18,6 +18,8 @@ import base64
 import asyncio
 from datetime import datetime
 
+from pipeline import *
+
 # Same Modal image and volume as existing server
 image = modal.Image.debian_slim(python_version="3.10").apt_install(
     "git",
