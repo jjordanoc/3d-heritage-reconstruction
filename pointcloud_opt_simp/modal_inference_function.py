@@ -31,58 +31,55 @@ image = (
 #image = modal.Image.debian_slim(python_version="3.10")
 app = modal.App("model_inference_ramtensors")
 
-@app.function(gpu="a10g",image=image)
-def run_inference(tensorized_images):
-    #do imports 
-    print("Imports...")
-    import modal
-    import os
-    import uuid
-    import glob
-    import torch
-    import math
-    import argparse
-    from pathlib import Path
-    from PIL import Image
-    from torchvision import transforms
+@app.cls(gpu="a10g",image=image,timeout=600,scaledown_window=240)
+class PI3Model:
+    @modal.enter()
+    def __enter__(self):
+        # This code runs ONCE when the container starts.
+        # All your model loading and setup goes here.
+        print("Imports...")
+        import torch
+        from pi3.models.pi3 import Pi3
+        from pi3.utils.geometry import depth_edge
+        
+        # Store imports we'll need in the inference method
+        self.torch = torch
+        self.depth_edge = depth_edge
 
-    # Imports for the Pi3 model and utilities
-    from pi3.models.pi3 import Pi3
-    from pi3.utils.geometry import se3_inverse, homogenize_points, depth_edge
-    from pi3.utils.basic import load_images_as_tensor
-    #import torch
+        #load model
+        print("Loading model...")
+        self.device = "cuda"
+        self.model = Pi3.from_pretrained("yyfz233/Pi3").to(self.device)
+        self.model.eval()
+        print("Model loaded succesfully and is persistent.")
 
-    #load model
-    print("Loading model...")
-    device = "cuda"
-    tensorized_images = tensorized_images.to(device)
-    model = Pi3.from_pretrained("yyfz233/Pi3").to(device)
-    model.eval()
-    print("Model loaded succesfully.")
 
-    #run forward pass
-    print("Running model inference...")
-    dtype = torch.bfloat16
-    with torch.no_grad():
-        with torch.amp.autocast('cuda', dtype=dtype):
-            predictions = model(tensorized_images[None])  # Add batch dimension
-    print("Model done")
-    #postprocessing
-    predictions['images'] = tensorized_images[None].permute(0, 1, 3, 4, 2)
-    predictions['conf'] = torch.sigmoid(predictions['conf'])
+    @modal.method()
+    def run_inference(self,tensorized_images):
+        tensorized_images = tensorized_images.to(self.device)
+        #run forward pass
+        print("Running model inference...")
+        dtype = torch.bfloat16
+        with torch.no_grad():
+            with torch.amp.autocast('cuda', dtype=dtype):
+                predictions = self.model(tensorized_images[None])  # Add batch dimension
+        print("Model done")
+        #postprocessing
+        predictions['images'] = tensorized_images[None].permute(0, 1, 3, 4, 2)
+        predictions['conf'] = torch.sigmoid(predictions['conf'])
+        
+        # Replace with your actual depth_edge function
+        edge = self.depth_edge(predictions['local_points'][..., 2], rtol=0.03)
+        predictions['conf'][edge] = 0.0
+        del predictions['local_points']
+
+        predictions['points'] = predictions['points'].cpu()
+        predictions['camera_poses'] = predictions['camera_poses'].cpu()
+        predictions['conf'] = predictions['conf'].cpu()
+        predictions['images'] = predictions['images'].cpu()
+
+        return predictions
     
-    # Replace with your actual depth_edge function
-    edge = depth_edge(predictions['local_points'][..., 2], rtol=0.03)
-    predictions['conf'][edge] = 0.0
-    del predictions['local_points']
-
-    predictions['points'] = predictions['points'].cpu()
-    predictions['camera_poses'] = predictions['camera_poses'].cpu()
-    predictions['conf'] = predictions['conf'].cpu()
-    predictions['images'] = predictions['images'].cpu()
-
-    return predictions
-
 def load_images(path,PIXEL_LIMIT=255000):
     import os
     from PIL import Image
@@ -127,21 +124,33 @@ def load_images(path,PIXEL_LIMIT=255000):
             print(f"Error processing an image: {e}")
     return torch.stack(tensor_list, dim=0)
 
-def runall(img_path,results_path):
+def runall(img_path, results_path):
+    # This function runs locally
+    print(f"Loading images from {img_path}...")
     imgs = load_images(img_path)
-    pt = run_inference.remote(imgs)
-    cpu_dict = {}
-    for key, value in pt.items():
-        if isinstance(value, torch.Tensor):
-            # Ensure the tensor is on the CPU
-            cpu_dict[key] = value.cpu()
-        else:
-            # Keep non-tensor values as they are
-            cpu_dict[key] = value
-    torch.save(cpu_dict,results_path)
+    
+    if imgs is None:
+        print("Image loading failed, aborting run.")
+        return
+
+    # Create a local "stub" for the remote class
+    model_stub = PI3Model()
+    
+    print("Calling remote inference method...")
+    # .call() is synchronous: it runs the remote function and waits for the result
+    pt_results = model_stub.run_inference.remote(imgs)
+    
+    print("Inference complete. Saving results locally...")
+    
+    # pt_results is the dictionary returned from run_inference,
+    # which already contains CPU tensors. We can save it directly.
+    # Ensure the results directory exists
+    os.makedirs(os.path.dirname(results_path), exist_ok=True)
+    torch.save(pt_results, results_path)
+    print(f"Results saved to {results_path}")
 
 @app.local_entrypoint()
 def main():
-    #runall("./data/sample_i", "./data/predictions/sample1_results.pt")
-    runall("./data/sample_ip1","./data/predictions/sample2_results.pt")
+    runall("./data/sample1","./data/predictions/test_run.pt")
+    #runall("./data/sample2","./data/predictions/sample2_results.pt")
     #runall("./data/sample3","./data/predictions/sample3_results.pt")
