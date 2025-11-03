@@ -200,8 +200,12 @@ def fastapi_app():
         return tensors
 
     def do_inference(images):
+        print(f"[DO_INFERENCE] Tensorizing {len(images)} images...")
         tensor_imgs = tensorize_images(images)
+        print(f"[DO_INFERENCE] Tensor shape: {tensor_imgs.shape}")
+        print(f"[DO_INFERENCE] Calling remote inference...")
         inference = run_inference(tensor_imgs)
+        print(f"[DO_INFERENCE] Remote inference returned")
         return inference
 
     def unify_pointcloud(pointclouds: list[open3d.geometry.PointCloud]) -> open3d.geometry.PointCloud:
@@ -314,19 +318,41 @@ def fastapi_app():
         Returns:
         unified,pointclouds
         """
+        print(f"\n[RUN_PIPELINE] Starting")
+        print(f"  Number of images: {len(images)}")
+        print(f"  Has reference PLY: {last_ply is not None}")
+        
+        print(f"[RUN_PIPELINE] Running inference on {len(images)} images...")
         result_tensor = do_inference(images)
+        print(f"[RUN_PIPELINE] Inference complete")
+        
+        print(f"[RUN_PIPELINE] Converting tensors to point clouds...")
         pointclouds, cameras = tensor_to_pointcloud(result_tensor)
+        print(f"[RUN_PIPELINE] Created {len(pointclouds)} point clouds")
+        
+        print(f"[RUN_PIPELINE] Unifying point clouds...")
         unified = unify_pointcloud(pointclouds)
+        print(f"[RUN_PIPELINE] Unified point cloud has {len(unified.points)} points")
+        
         if (last_ply is not None):
+            print(f"[RUN_PIPELINE] Performing registration to reference frame...")
+            print(f"  Reference PLY points: {len(last_ply.points)}")
             tf = do_registration(unified,last_ply)
+            print(f"[RUN_PIPELINE] Registration complete, transformation matrix:")
+            print(tf)
 
-            for pcd in pointclouds:
+            print(f"[RUN_PIPELINE] Applying transformation to all point clouds...")
+            for i, pcd in enumerate(pointclouds):
                 pcd.transform(tf)
             unified.transform(tf)
 
             for i, cam in enumerate(cameras):
                 cameras[i] = tf @ cam
+            print(f"[RUN_PIPELINE] Transformation applied to {len(pointclouds)} clouds and {len(cameras)} cameras")
+        else:
+            print(f"[RUN_PIPELINE] No registration needed (first reconstruction)")
         
+        print(f"[RUN_PIPELINE] Complete\n")
         return unified,pointclouds,cameras
 
     def read_images(path:str,new_id:str,PIXEL_LIMIT=255000) -> list[Image.Image]:
@@ -341,24 +367,49 @@ def fastapi_app():
         Returns:
         list[Image.Image]: a list of PIL images, where the last image is the image with file name new_id
         """
+        print(f"\n[READ_IMAGES] Starting")
+        print(f"  path: {path}")
+        print(f"  new_id: {new_id}")
+        print(f"  PIXEL_LIMIT: {PIXEL_LIMIT}")
+        
         sources = []
         filenames = sorted([x for x in os.listdir(path) if x.lower().endswith(('.png', '.jpg', '.jpeg'))])
+        
+        print(f"[READ_IMAGES] Found {len(filenames)} image files:")
+        for i, fn in enumerate(filenames):
+            print(f"    {i}: {fn}")
+        
         #Make sure new_id is the last image
         new_id_filename = next((name for name in filenames 
                                 if os.path.splitext(name)[0] == new_id or name == new_id), 
                             None)
+        
         if new_id_filename:
+            print(f"[READ_IMAGES] Found matching file for new_id: {new_id_filename}")
             filenames.remove(new_id_filename)
             filenames.append(new_id_filename)
+            print(f"[READ_IMAGES] Reordered so new_id is last")
         else:
+            print(f"[READ_IMAGES] ERROR: new_id '{new_id}' not found in directory!")
+            print(f"[READ_IMAGES] Searched for files matching:")
+            print(f"    - Basename without extension: {new_id}")
+            print(f"    - Exact filename: {new_id}")
             raise Exception("new_id no existe en el directorio especificado")
+        
+        print(f"\n[READ_IMAGES] Final image order:")
+        for i, fn in enumerate(filenames):
+            print(f"    {i}: {fn}")
+        
         shape = 500
         for i in range(0, len(filenames)):
             img_path = os.path.join(path, filenames[i])
             try:
                 sources.append(Image.open(img_path).convert('RGB'))
             except:
-                print("Failed to load image {filenames[i]}")
+                print(f"[READ_IMAGES] Failed to load image {filenames[i]}")
+        
+        print(f"[READ_IMAGES] Successfully loaded {len(sources)} images")
+        
         #resize (copied from PI3)
         first_img = sources[0]
         W_orig, H_orig = first_img.size
@@ -369,7 +420,7 @@ def fastapi_app():
             if k / m > W_target / H_target: k -= 1
             else: m -= 1
         TARGET_W, TARGET_H = max(1, k) * 14, max(1, m) * 14
-        print(f"All images will be resized to a uniform size: ({TARGET_W}, {TARGET_H})")
+        print(f"[READ_IMAGES] All images will be resized to: ({TARGET_W}, {TARGET_H})")
 
         image_list = []
         
@@ -380,11 +431,12 @@ def fastapi_app():
                 # Convert to tensor
                 image_list.append(resized_img)
             except Exception as e:
-                print(f"Error processing an image: {e}")
+                print(f"[READ_IMAGES] Error processing an image: {e}")
         #process last image and dont catch
         resized_img = sources[-1].resize((TARGET_W, TARGET_H), Image.Resampling.LANCZOS)
         image_list.append(resized_img)
 
+        print(f"[READ_IMAGES] Returning {len(image_list)} processed images\n")
         return image_list
 
     def addImageToCollection(inPath,oldPly,new_id,outputs_directory = "./data/pointclouds",save_all_shards=False):
@@ -406,30 +458,81 @@ def fastapi_app():
         Serializes the point clouds
         Registers the new point cloud to the old point cloud to allow for online addition
         """
+        print(f"\n[ADD_IMAGE_TO_COLLECTION] Starting")
+        print(f"  inPath: {inPath}")
+        print(f"  oldPly: {oldPly}")
+        print(f"  new_id: {new_id}")
+        print(f"  outputs_directory: {outputs_directory}")
+        print(f"  save_all_shards: {save_all_shards}")
+        
         new_path = outputs_directory + "/latest"
+        print(f"[ADD_IMAGE_TO_COLLECTION] new_path will be: {new_path}")
+        
         #if there is someone currently on the latest path, i must move them
         if os.path.exists(new_path):
+            print(f"[ADD_IMAGE_TO_COLLECTION] new_path already exists, archiving it")
             #each old ply bears the name of he who obsoleted them, as an eternal reminder
             #of our mortality and how age comes for us all
             old_path = outputs_directory + f'/{new_id.split(".")[0]}'
+            print(f"[ADD_IMAGE_TO_COLLECTION] Renaming {new_path} -> {old_path}")
             os.rename(new_path,old_path)
+            print(f"[ADD_IMAGE_TO_COLLECTION] Creating new directory: {new_path}")
             os.mkdir(new_path)
+        else:
+            print(f"[ADD_IMAGE_TO_COLLECTION] new_path does not exist yet, creating it")
+            os.makedirs(new_path, exist_ok=True)
 
         images = read_images(inPath,new_id)
+        print(f"[ADD_IMAGE_TO_COLLECTION] Loaded {len(images)} images from read_images()")
 
         last_ply = None
         if oldPly is not None:
+            print(f"[ADD_IMAGE_TO_COLLECTION] Loading reference point cloud: {oldPly}")
             last_ply = open3d.io.read_point_cloud(oldPly)
+            print(f"[ADD_IMAGE_TO_COLLECTION] Reference cloud has {len(last_ply.points)} points")
+        else:
+            print(f"[ADD_IMAGE_TO_COLLECTION] No reference point cloud (first reconstruction)")
 
+        print(f"[ADD_IMAGE_TO_COLLECTION] Running pipeline (inference + registration)...")
         unified, pcds, cam_estimates = run_pipeline(images,last_ply)
-        open3d.io.write_point_cloud(new_path + "/full.ply",unified)
-        open3d.io.write_point_cloud(new_path + f'/{new_id.split(".")[0]}.ply',pcds[-1])
+        
+        print(f"[ADD_IMAGE_TO_COLLECTION] Pipeline complete:")
+        print(f"  Unified point cloud: {len(unified.points)} points")
+        print(f"  Individual point clouds: {len(pcds)}")
+        for i, pcd in enumerate(pcds):
+            print(f"    {i}: {len(pcd.points)} points")
+        
+        full_ply_path = new_path + "/full.ply"
+        print(f"\n[ADD_IMAGE_TO_COLLECTION] Writing full point cloud: {full_ply_path}")
+        open3d.io.write_point_cloud(full_ply_path, unified)
+        
+        # Save the last point cloud with the new_id name
+        new_id_basename = new_id.split(".")[0]
+        last_ply_path = new_path + f'/{new_id_basename}.ply'
+        print(f"[ADD_IMAGE_TO_COLLECTION] Writing last image's point cloud: {last_ply_path}")
+        print(f"  new_id: '{new_id}'")
+        print(f"  new_id_basename: '{new_id_basename}'")
+        print(f"  Last point cloud index: {len(pcds)-1}")
+        print(f"  Last point cloud points: {len(pcds[-1].points)}")
+        open3d.io.write_point_cloud(last_ply_path, pcds[-1])
         
         # For full refetch, save all individual point clouds as shards
         if save_all_shards:
+            print(f"[ADD_IMAGE_TO_COLLECTION] Saving all {len(pcds)} shards (full refetch mode)")
             for i, pcd in enumerate(pcds):
                 shard_path = new_path + f"/{i:04d}.ply"
+                print(f"  Writing shard {i}: {shard_path} ({len(pcd.points)} points)")
                 open3d.io.write_point_cloud(shard_path, pcd)
+        else:
+            print(f"[ADD_IMAGE_TO_COLLECTION] Not saving individual shards (incremental mode)")
+        
+        print(f"\n[ADD_IMAGE_TO_COLLECTION] Complete. Returning: {new_path}")
+        print(f"[ADD_IMAGE_TO_COLLECTION] Files written:")
+        if os.path.exists(new_path):
+            for f in os.listdir(new_path):
+                fpath = os.path.join(new_path, f)
+                size_kb = os.path.getsize(fpath) / 1024
+                print(f"    - {f} ({size_kb:.2f} KB)")
         
         return new_path
 
@@ -507,16 +610,42 @@ def fastapi_app():
         Returns:
             Path to folder containing shard PLY files
         """
+        print(f"\n{'='*80}")
+        print(f"[RECONSTRUCTION_WRAPPER] Starting reconstruction")
+        print(f"  project_id: {project_id}")
+        print(f"  image_id: {image_id}")
+        print(f"  is_full_refetch: {is_full_refetch}")
+        print(f"{'='*80}\n")
+        
         # Modal volume paths
         images_folder = str(vol_mnt_loc / "backend_data" / "reconstructions" / project_id / "images")
         outputs_folder = str(vol_mnt_loc / "backend_data" / "reconstructions" / project_id / "models")
         old_ply_path = outputs_folder + "/latest/full.ply"
         
+        print(f"[RECONSTRUCTION_WRAPPER] Constructed paths:")
+        print(f"  images_folder: {images_folder}")
+        print(f"  outputs_folder: {outputs_folder}")
+        print(f"  old_ply_path: {old_ply_path}")
+        
         # Check if reference PLY exists
         if not os.path.exists(old_ply_path):
+            print(f"[RECONSTRUCTION_WRAPPER] Reference PLY does NOT exist, will be first reconstruction")
             old_ply_path = None
+        else:
+            print(f"[RECONSTRUCTION_WRAPPER] Reference PLY EXISTS, will perform registration")
+        
+        # List images before calling pipeline
+        if os.path.exists(images_folder):
+            image_files = sorted([f for f in os.listdir(images_folder) if f.lower().endswith(('.png', '.jpg', '.jpeg'))])
+            print(f"\n[RECONSTRUCTION_WRAPPER] Images in folder ({len(image_files)} total):")
+            for img_file in image_files:
+                print(f"    - {img_file}")
+            print()
+        else:
+            print(f"[RECONSTRUCTION_WRAPPER] WARNING: images_folder does not exist!")
         
         # Call pipeline with full_refetch flag
+        print(f"[RECONSTRUCTION_WRAPPER] Calling addImageToCollection...")
         result_folder = addImageToCollection(
             inPath=images_folder,
             oldPly=old_ply_path,
@@ -524,24 +653,58 @@ def fastapi_app():
             outputs_directory=outputs_folder,
             save_all_shards=is_full_refetch
         )
+        print(f"[RECONSTRUCTION_WRAPPER] addImageToCollection returned: {result_folder}")
+        
+        # List what was created
+        if os.path.exists(result_folder):
+            created_files = os.listdir(result_folder)
+            print(f"\n[RECONSTRUCTION_WRAPPER] Files created in result folder:")
+            for f in created_files:
+                file_path = os.path.join(result_folder, f)
+                file_size = os.path.getsize(file_path) / 1024  # KB
+                print(f"    - {f} ({file_size:.2f} KB)")
+        else:
+            print(f"[RECONSTRUCTION_WRAPPER] WARNING: result_folder does not exist!")
         
         volume.commit()  # Persist to Modal volume
+        print(f"[RECONSTRUCTION_WRAPPER] Volume committed")
         
         # Return appropriate folder based on refetch type
         if is_full_refetch:
-            # Return folder with all shards (0000.ply, 0001.ply, ...)
+            print(f"[RECONSTRUCTION_WRAPPER] Full refetch - returning result folder with all shards")
             return result_folder
         else:
+            print(f"[RECONSTRUCTION_WRAPPER] Incremental update - creating temp folder with single shard")
+            
             # Return folder with just the new image's PLY
             # Create temp folder with only the incremental update
             temp_folder = result_folder + "_incremental"
+            print(f"[RECONSTRUCTION_WRAPPER] Creating temp folder: {temp_folder}")
             os.makedirs(temp_folder, exist_ok=True)
             
             # Copy just the new image's PLY
             src = os.path.join(result_folder, f"{image_id}.ply")
             dst = os.path.join(temp_folder, "0000.ply")  # Name as shard 0
+            
+            print(f"[RECONSTRUCTION_WRAPPER] Copying incremental shard:")
+            print(f"  Source: {src}")
+            print(f"  Dest: {dst}")
+            print(f"  Source exists: {os.path.exists(src)}")
+            
             volume.reload()
+            
+            if not os.path.exists(src):
+                print(f"[RECONSTRUCTION_WRAPPER] ERROR: Source file does not exist!")
+                print(f"[RECONSTRUCTION_WRAPPER] Files in result_folder:")
+                for f in os.listdir(result_folder):
+                    print(f"    - {f}")
+                raise FileNotFoundError(f"Expected file not found: {src}")
+            
             shutil.copy(src, dst)
+            print(f"[RECONSTRUCTION_WRAPPER] Copy successful")
+            
+            dst_size = os.path.getsize(dst) / 1024
+            print(f"[RECONSTRUCTION_WRAPPER] Copied file size: {dst_size:.2f} KB")
             
             return temp_folder
     
