@@ -1,0 +1,643 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Heritage Reconstruction WebSocket Test Client</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      min-height: 100vh;
+      padding: 20px;
+    }
+
+    .container {
+      max-width: 1200px;
+      margin: 0 auto;
+      background: white;
+      border-radius: 12px;
+      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+      overflow: hidden;
+    }
+
+    .header {
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: white;
+      padding: 30px;
+      text-align: center;
+    }
+
+    .header h1 {
+      font-size: 28px;
+      margin-bottom: 10px;
+    }
+
+    .header p {
+      opacity: 0.9;
+      font-size: 14px;
+    }
+
+    .main-content {
+      display: grid;
+      grid-template-columns: 1fr 2fr;
+      gap: 20px;
+      padding: 30px;
+    }
+
+    .control-panel {
+      background: #f8f9fa;
+      padding: 20px;
+      border-radius: 8px;
+    }
+
+    .control-group {
+      margin-bottom: 20px;
+    }
+
+    .control-group label {
+      display: block;
+      font-weight: 600;
+      margin-bottom: 8px;
+      color: #333;
+    }
+
+    .control-group input {
+      width: 100%;
+      padding: 10px;
+      border: 2px solid #e0e0e0;
+      border-radius: 6px;
+      font-size: 14px;
+      transition: border-color 0.3s;
+    }
+
+    .control-group input:focus {
+      outline: none;
+      border-color: #667eea;
+    }
+
+    button {
+      width: 100%;
+      padding: 12px;
+      border: none;
+      border-radius: 6px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.3s;
+      margin-bottom: 10px;
+    }
+
+    button:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    .btn-primary {
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: white;
+    }
+
+    .btn-primary:hover:not(:disabled) {
+      transform: translateY(-2px);
+      box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
+    }
+
+    .btn-secondary {
+      background: #6c757d;
+      color: white;
+    }
+
+    .btn-secondary:hover:not(:disabled) {
+      background: #5a6268;
+    }
+
+    .btn-danger {
+      background: #dc3545;
+      color: white;
+    }
+
+    .btn-danger:hover:not(:disabled) {
+      background: #c82333;
+    }
+
+    .status-indicator {
+      display: flex;
+      align-items: center;
+      padding: 10px;
+      border-radius: 6px;
+      margin-bottom: 20px;
+      font-size: 13px;
+      font-weight: 600;
+    }
+
+    .status-indicator::before {
+      content: '';
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      margin-right: 10px;
+    }
+
+    .status-disconnected {
+      background: #fee;
+      color: #c00;
+    }
+
+    .status-disconnected::before {
+      background: #c00;
+    }
+
+    .status-connected {
+      background: #efe;
+      color: #080;
+    }
+
+    .status-connected::before {
+      background: #080;
+      animation: pulse 2s infinite;
+    }
+
+    @keyframes pulse {
+
+      0%,
+      100% {
+        opacity: 1;
+      }
+
+      50% {
+        opacity: 0.5;
+      }
+    }
+
+    .log-panel {
+      background: #f8f9fa;
+      padding: 20px;
+      border-radius: 8px;
+    }
+
+    .log-panel h2 {
+      font-size: 18px;
+      margin-bottom: 15px;
+      color: #333;
+    }
+
+    .log-container {
+      background: #1e1e1e;
+      color: #d4d4d4;
+      padding: 15px;
+      border-radius: 6px;
+      height: 500px;
+      overflow-y: auto;
+      font-family: 'Courier New', monospace;
+      font-size: 12px;
+      line-height: 1.6;
+    }
+
+    .log-entry {
+      margin-bottom: 8px;
+      word-wrap: break-word;
+    }
+
+    .log-timestamp {
+      color: #858585;
+      margin-right: 10px;
+    }
+
+    .log-type-info {
+      color: #4ec9b0;
+    }
+
+    .log-type-success {
+      color: #6a9955;
+    }
+
+    .log-type-warning {
+      color: #ce9178;
+    }
+
+    .log-type-error {
+      color: #f48771;
+    }
+
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 10px;
+      margin-bottom: 20px;
+    }
+
+    .stat-card {
+      background: white;
+      padding: 15px;
+      border-radius: 6px;
+      border: 2px solid #e0e0e0;
+    }
+
+    .stat-label {
+      font-size: 12px;
+      color: #666;
+      margin-bottom: 5px;
+    }
+
+    .stat-value {
+      font-size: 24px;
+      font-weight: 700;
+      color: #333;
+    }
+
+    input[type="file"] {
+      display: none;
+    }
+
+    .file-upload-btn {
+      display: block;
+      width: 100%;
+      padding: 12px;
+      background: white;
+      border: 2px dashed #667eea;
+      border-radius: 6px;
+      color: #667eea;
+      font-weight: 600;
+      cursor: pointer;
+      text-align: center;
+      transition: all 0.3s;
+    }
+
+    .file-upload-btn:hover {
+      background: #f0f4ff;
+      border-color: #764ba2;
+    }
+
+    .selected-file {
+      margin-top: 10px;
+      padding: 8px;
+      background: white;
+      border-radius: 4px;
+      font-size: 12px;
+      color: #666;
+    }
+  </style>
+</head>
+
+<body>
+  <div class="container">
+    <div class="header">
+      <h1>🏛️ Heritage Reconstruction WebSocket</h1>
+      <p>Test client for real-time 3D reconstruction streaming</p>
+    </div>
+
+    <div class="main-content">
+      <!-- Control Panel -->
+      <div class="control-panel">
+        <div id="status-indicator" class="status-indicator status-disconnected">
+          DISCONNECTED
+        </div>
+
+        <div class="stats-grid">
+          <div class="stat-card">
+            <div class="stat-label">Sequence</div>
+            <div class="stat-value" id="sequence-count">0</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">Shards</div>
+            <div class="stat-value" id="shard-count">0</div>
+          </div>
+        </div>
+
+        <div class="control-group">
+          <label for="ws-url">WebSocket URL</label>
+          <input type="text" id="ws-url" placeholder="wss://your-modal-url.modal.run/ws/auditorio"
+            value="ws://localhost:8000/ws/auditorio">
+        </div>
+
+        <div class="control-group">
+          <label for="project-id">Project ID</label>
+          <input type="text" id="project-id" placeholder="auditorio" value="auditorio">
+        </div>
+
+        <button id="connect-btn" class="btn-primary" onclick="connectWebSocket()">
+          Connect
+        </button>
+
+        <button id="disconnect-btn" class="btn-danger" onclick="disconnectWebSocket()" disabled>
+          Disconnect
+        </button>
+
+        <hr style="margin: 20px 0; border: none; border-top: 1px solid #ddd;">
+
+        <div class="control-group">
+          <label>Upload Image</label>
+          <label for="file-input" class="file-upload-btn">
+            📁 Choose Image File
+          </label>
+          <input type="file" id="file-input" accept="image/*" onchange="handleFileSelect(event)">
+          <div id="selected-file" class="selected-file" style="display: none;"></div>
+        </div>
+
+        <button id="upload-btn" class="btn-primary" onclick="uploadImage()" disabled>
+          Upload & Reconstruct
+        </button>
+
+        <button class="btn-secondary" onclick="requestResync()" id="resync-btn" disabled>
+          Request Resync
+        </button>
+
+        <button class="btn-secondary" onclick="sendPing()" id="ping-btn" disabled>
+          Send Ping
+        </button>
+
+        <button class="btn-secondary" onclick="clearLogs()">
+          Clear Logs
+        </button>
+      </div>
+
+      <!-- Log Panel -->
+      <div class="log-panel">
+        <h2>📋 Message Log</h2>
+        <div class="log-container" id="log-container">
+          <div class="log-entry">
+            <span class="log-timestamp">[Ready]</span>
+            <span class="log-type-info">Waiting for connection...</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    let ws = null;
+    let selectedFile = null;
+    let sequenceCount = 0;
+    let shardCount = 0;
+
+    function log(message, type = 'info') {
+      const container = document.getElementById('log-container');
+      const entry = document.createElement('div');
+      entry.className = 'log-entry';
+
+      const timestamp = new Date().toLocaleTimeString();
+      const timestampSpan = document.createElement('span');
+      timestampSpan.className = 'log-timestamp';
+      timestampSpan.textContent = `[${timestamp}]`;
+
+      const messageSpan = document.createElement('span');
+      messageSpan.className = `log-type-${type}`;
+      messageSpan.textContent = message;
+
+      entry.appendChild(timestampSpan);
+      entry.appendChild(messageSpan);
+      container.appendChild(entry);
+
+      // Auto-scroll to bottom
+      container.scrollTop = container.scrollHeight;
+    }
+
+    function updateStatus(connected) {
+      const indicator = document.getElementById('status-indicator');
+      const connectBtn = document.getElementById('connect-btn');
+      const disconnectBtn = document.getElementById('disconnect-btn');
+      const uploadBtn = document.getElementById('upload-btn');
+      const resyncBtn = document.getElementById('resync-btn');
+      const pingBtn = document.getElementById('ping-btn');
+
+      if (connected) {
+        indicator.className = 'status-indicator status-connected';
+        indicator.textContent = 'CONNECTED';
+        connectBtn.disabled = true;
+        disconnectBtn.disabled = false;
+        uploadBtn.disabled = selectedFile === null;
+        resyncBtn.disabled = false;
+        pingBtn.disabled = false;
+      } else {
+        indicator.className = 'status-indicator status-disconnected';
+        indicator.textContent = 'DISCONNECTED';
+        connectBtn.disabled = false;
+        disconnectBtn.disabled = true;
+        uploadBtn.disabled = true;
+        resyncBtn.disabled = true;
+        pingBtn.disabled = true;
+      }
+    }
+
+    function updateStats(sequence, shards) {
+      if (sequence !== undefined) {
+        sequenceCount = sequence;
+        document.getElementById('sequence-count').textContent = sequenceCount;
+      }
+      if (shards !== undefined) {
+        shardCount += shards;
+        document.getElementById('shard-count').textContent = shardCount;
+      }
+    }
+
+    function connectWebSocket() {
+      const projectId = document.getElementById('project-id').value || 'auditorio';
+      const wsUrl = document.getElementById('ws-url').value;
+
+      // Build URL
+      let url = wsUrl;
+      if (!wsUrl.includes('/ws/')) {
+        // Assume base URL provided, append /ws/{project_id}
+        url = `${wsUrl.replace(/\/$/, '')}/ws/${projectId}`;
+      }
+
+      log(`Connecting to ${url}...`, 'info');
+
+      try {
+        ws = new WebSocket(url);
+
+        ws.onopen = () => {
+          log('✅ Connected successfully!', 'success');
+          updateStatus(true);
+        };
+
+        ws.onmessage = (event) => {
+          try {
+            const message = JSON.parse(event.data);
+            handleMessage(message);
+          } catch (e) {
+            log(`Error parsing message: ${e.message}`, 'error');
+          }
+        };
+
+        ws.onerror = (error) => {
+          log(`❌ WebSocket error occurred`, 'error');
+          console.error(error);
+        };
+
+        ws.onclose = () => {
+          log('Connection closed', 'warning');
+          updateStatus(false);
+          ws = null;
+        };
+
+      } catch (error) {
+        log(`Failed to connect: ${error.message}`, 'error');
+      }
+    }
+
+    function disconnectWebSocket() {
+      if (ws) {
+        ws.close();
+        ws = null;
+        log('Disconnected by user', 'info');
+      }
+    }
+
+    function handleMessage(message) {
+      const type = message.type;
+
+      switch (type) {
+        case 'initial_state':
+          log(`📦 Initial State: ${message.message}`, 'info');
+          log(`   Total images: ${message.total_images}`, 'info');
+          break;
+
+        case 'initial_state_starting':
+          log(`📦 Loading initial state: ${message.total_shards} shard(s)...`, 'info');
+          break;
+
+        case 'initial_state_shard':
+          log(`   Shard ${message.shard_index + 1}/${message.total_shards} received`, 'success');
+          updateStats(undefined, 1);
+          break;
+
+        case 'initial_state_complete':
+          log(`✅ Initial state loaded! Total images: ${message.total_images}`, 'success');
+          break;
+
+        case 'upload_acknowledged':
+          log(`✅ Upload acknowledged: ${message.image_id}`, 'success');
+          log(`   ${message.message}`, 'info');
+          break;
+
+        case 'processing_started':
+          log(`🔄 Processing started for ${message.image_id}`, 'info');
+          break;
+
+        case 'refetch_starting':
+          log(`🔄 FULL REFETCH STARTING`, 'warning');
+          log(`   Reason: ${message.reason}`, 'warning');
+          log(`   Total shards: ${message.total_shards}`, 'warning');
+          updateStats(message.sequence, undefined);
+          break;
+
+        case 'shard_update':
+          const refetchStr = message.is_full_refetch ? '(FULL)' : '(INCR)';
+          log(`📊 Shard ${message.shard_index + 1}/${message.total_shards} ${refetchStr}`, 'success');
+
+          const sizeKB = Math.round(message.shard_data.length * 0.75 / 1024); // Rough base64 -> bytes
+          log(`   Size: ~${sizeKB} KB | Sequence: ${message.sequence}`, 'info');
+
+          updateStats(message.sequence, 1);
+          break;
+
+        case 'processing_complete':
+          log(`✅ Processing complete for ${message.image_id}`, 'success');
+          log(`   Sequence: ${message.sequence} | Total images: ${message.total_images}`, 'info');
+          break;
+
+        case 'error':
+          log(`❌ ERROR: ${message.message}`, 'error');
+          if (message.error) {
+            log(`   Details: ${message.error}`, 'error');
+          }
+          break;
+
+        case 'pong':
+          log(`🏓 Pong received at ${message.timestamp}`, 'success');
+          break;
+
+        default:
+          log(`Unknown message type: ${type}`, 'warning');
+          console.log('Full message:', message);
+      }
+    }
+
+    function handleFileSelect(event) {
+      const file = event.target.files[0];
+      if (file) {
+        selectedFile = file;
+        document.getElementById('selected-file').style.display = 'block';
+        document.getElementById('selected-file').textContent = `Selected: ${file.name} (${Math.round(file.size / 1024)} KB)`;
+        document.getElementById('upload-btn').disabled = ws === null;
+        log(`File selected: ${file.name}`, 'info');
+      }
+    }
+
+    function uploadImage() {
+      if (!selectedFile || !ws) {
+        log('No file selected or not connected', 'error');
+        return;
+      }
+
+      log(`📤 Uploading ${selectedFile.name}...`, 'info');
+
+      const reader = new FileReader();
+      reader.onload = () => {
+        try {
+          // Remove data:image/...;base64, prefix
+          const base64Data = reader.result.split(',')[1];
+
+          const message = {
+            type: 'upload_image',
+            image_data: base64Data
+          };
+
+          ws.send(JSON.stringify(message));
+          log(`✅ Upload sent (${Math.round(base64Data.length / 1024)} KB)`, 'success');
+
+        } catch (error) {
+          log(`Failed to upload: ${error.message}`, 'error');
+        }
+      };
+
+      reader.onerror = () => {
+        log('Failed to read file', 'error');
+      };
+
+      reader.readAsDataURL(selectedFile);
+    }
+
+    function requestResync() {
+      if (!ws) {
+        log('Not connected', 'error');
+        return;
+      }
+
+      ws.send(JSON.stringify({ type: 'request_resync' }));
+      log('🔄 Resync requested', 'info');
+    }
+
+    function sendPing() {
+      if (!ws) {
+        log('Not connected', 'error');
+        return;
+      }
+
+      ws.send(JSON.stringify({ type: 'ping' }));
+      log('🏓 Ping sent', 'info');
+    }
+
+    function clearLogs() {
+      document.getElementById('log-container').innerHTML = '';
+      log('Logs cleared', 'info');
+    }
+
+    // Update URL when project ID changes
+    document.getElementById('project-id').addEventListener('input', (e) => {
+      const baseUrl = document.getElementById('ws-url').value.split('/ws/')[0];
+      document.getElementById('ws-url').value = `${baseUrl}/ws/${e.target.value}`;
+    });
+  </script>
+</body>
+
+</html>
