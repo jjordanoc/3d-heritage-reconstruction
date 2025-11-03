@@ -1,13 +1,4 @@
-import open3d
-import typing
-import numpy
-import os
-from PIL import Image
-import math
-from torchvision import transforms
-import argparse
-import torch
-import modal
+
 #from modal_inference_function import PI3Model
 
 
@@ -213,7 +204,7 @@ def read_images(path:str,new_id:str,PIXEL_LIMIT=255000) -> list[Image.Image]:
 
     return image_list
 
-def addImageToCollection(inPath,oldPly,new_id,outputs_directory = "./data/pointclouds"):
+def addImageToCollection(inPath,oldPly,new_id,outputs_directory = "./data/pointclouds",save_all_shards=False):
     """
     Arguments
     inPath: Path to a folder containing the images
@@ -221,6 +212,7 @@ def addImageToCollection(inPath,oldPly,new_id,outputs_directory = "./data/pointc
             if None is passed registration is ommited.
     new_id: string corresponding to the latest image
     outputs_directory: The directory in wich to save the outputs
+    save_all_shards: If True, save individual PLY files for all images (for full refetch)
     
     returns: a path to a directory containing at least the latest infered pointcloud and {i}.ply the pointcloud 
             for the new_id (latest) image.
@@ -236,7 +228,7 @@ def addImageToCollection(inPath,oldPly,new_id,outputs_directory = "./data/pointc
     if os.path.exists(new_path):
         #each old ply bears the name of he who obsoleted them, as an eternal reminder
         #of our mortality and how age comes for us all
-        old_path = outputs_directory + f"/{new_id.split(".")[0]}"
+        old_path = outputs_directory + f'/{new_id.split(".")[0]}'
         os.rename(new_path,old_path)
         os.mkdir(new_path)
 
@@ -248,7 +240,15 @@ def addImageToCollection(inPath,oldPly,new_id,outputs_directory = "./data/pointc
 
     unified, pcds, cam_estimates = run_pipeline(images,last_ply)
     open3d.io.write_point_cloud(new_path + "/full.ply",unified)
-    open3d.io.write_point_cloud(new_path + f"/{new_id.split(".")[0]}.ply",pcds[-1])
+    open3d.io.write_point_cloud(new_path + f'/{new_id.split(".")[0]}.ply',pcds[-1])
+    
+    # For full refetch, save all individual point clouds as shards
+    if save_all_shards:
+        for i, pcd in enumerate(pcds):
+            shard_path = new_path + f"/{i:04d}.ply"
+            open3d.io.write_point_cloud(shard_path, pcd)
+    
+    return new_path
 
 
 def main():
