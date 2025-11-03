@@ -8,16 +8,15 @@ from torchvision import transforms
 import argparse
 import torch
 import modal
-from modal_inference_function import PI3Model
+#from modal_inference_function import PI3Model
 
 
 ### TEST FUNCTIONS 
 
 def run_inference(tensor_imgs):
-    app_stub = modal.App.lookup("model_inference_ramtensors")
-    print(dir(app_stub))
-    model_stub = app_stub.PI3Model()
-    predictions = model_stub.run_inference.remote(tensor_imgs)
+    pi3_obj = modal.Cls.from_name("model_inference_ramtensors", "PI3Model")
+    pi3Model = pi3_obj() #instantiate the class
+    predictions = pi3Model.run_inference.remote(tensor_imgs)
     print("Inference complete. Received results locally.")
     return predictions
 
@@ -134,11 +133,27 @@ def tensor_to_pointcloud(model_output,threshold=0.3):
     return (pcds,campos)
 
 def run_pipeline(images,last_ply):
+    """
+    Arguments:
+    Images: PIL.Image list of images to run inference on
+    last_ply: An optional last ply file to wich the new infered pointcloud will be registered
+    Returns:
+    unified,pointclouds
+    """
     result_tensor = do_inference(images)
     pointclouds, cameras = tensor_to_pointcloud(result_tensor)
+    unified = unify_pointcloud(pointclouds)
     if (last_ply is not None):
-        transform = do_registration(pointclouds,last_ply)
-    return None,None
+        tf = do_registration(unified,last_ply)
+
+        for pcd in pointclouds:
+            pcd.transform(tf)
+        unified.transform(tf)
+
+        for i, cam in enumerate(cameras):
+            cameras[i] = tf @ cam
+    
+    return unified,pointclouds,cameras
 
 def read_images(path:str,new_id:str,PIXEL_LIMIT=255000) -> list[Image.Image]:
     """
@@ -198,14 +213,15 @@ def read_images(path:str,new_id:str,PIXEL_LIMIT=255000) -> list[Image.Image]:
 
     return image_list
 
-def addImageToCollection(inPath,oldPly,new_id):
+def addImageToCollection(inPath,oldPly,new_id,outputs_directory = "./data/pointclouds"):
     """
     Arguments
     inPath: Path to a folder containing the images
     oldPly: (optional) path pointing to a PLY file of the last full scene to perform registration.
             if None is passed registration is ommited.
     new_id: string corresponding to the latest image
-
+    outputs_directory: The directory in wich to save the outputs
+    
     returns: a path to a directory containing at least the latest infered pointcloud and {i}.ply the pointcloud 
             for the new_id (latest) image.
     
@@ -215,17 +231,28 @@ def addImageToCollection(inPath,oldPly,new_id):
     Serializes the point clouds
     Registers the new point cloud to the old point cloud to allow for online addition
     """
-    new_path = ""
+    new_path = outputs_directory + "/latest"
+    #if there is someone currently on the latest path, i must move them
+    if os.path.exists(new_path):
+        #each old ply bears the name of he who obsoleted them, as an eternal reminder
+        #of our mortality and how age comes for us all
+        old_path = outputs_directory + f"/{new_id.split(".")[0]}"
+        os.rename(new_path,old_path)
+        os.mkdir(new_path)
+
     images = read_images(inPath,new_id)
 
     last_ply = None
     if oldPly is not None:
         last_ply = open3d.io.read_point_cloud(oldPly)
 
-    point_estimates, cam_estimates = run_pipeline(images,last_ply)
-    open3d.io.save_point_cloud(new_path + "/latest.ply")
-    open3d.io.save_point_cloud(new_path + "/{i}.ply")
+    unified, pcds, cam_estimates = run_pipeline(images,last_ply)
+    open3d.io.write_point_cloud(new_path + "/full.ply",unified)
+    open3d.io.write_point_cloud(new_path + f"/{new_id.split(".")[0]}.ply",pcds[-1])
 
+
+def main():
+    addImageToCollection("./data/sample_ip1/","./data/pointclouds/pipeline_results1/latest.ply","0078")
 
 if __name__ == "__main__":
-    addImageToCollection("./data/sample_i/",None,"0020")
+    main()
