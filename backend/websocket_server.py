@@ -150,7 +150,7 @@ class ConnectionManager:
         )
 
 
-@app.function(image=image, volumes={vol_mnt_loc: volume})
+@app.function(image=image, volumes={vol_mnt_loc: volume}, timeout=60*60*24)
 @modal.asgi_app()
 def fastapi_app():
     from PIL import Image
