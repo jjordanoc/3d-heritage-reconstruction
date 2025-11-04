@@ -3,6 +3,7 @@ from fastapi.responses import HTMLResponse
 from fastapi import UploadFile, File, HTTPException
 from pathlib import Path
 import time
+import base64
 
 # ANSI Color codes for logging
 class Colors:
@@ -34,7 +35,7 @@ image = modal.Image.debian_slim(python_version="3.10").apt_install(
         "requests-toolbelt"
     ])
 
-volume = modal.Volume.from_name(name="ut3c-heritage")
+volume = modal.Volume.from_name(name="ut3c-heritage", create_if_missing=True)
 
 
 #application stuff
@@ -86,7 +87,7 @@ def fastapi_app():
     def extract_last_image_pointcloud(inf_data_path, id, conf_thres=50):
         """
         Extracts the pointcloud and camera pose for the LAST (most recent) image.
-        Returns: tuple (ply_path, camera_pose)
+        Returns: tuple (last_pc_ply_path, camera_pose)
         """
         func_start = time.time()
         print(f"{Colors.CYAN}🔍 [extract_last_image_pointcloud] ENTER - id={id}, conf_thres={conf_thres}{Colors.RESET}")
@@ -172,7 +173,7 @@ def fastapi_app():
         
         return str(temp_ply_path), camera_pose
 
-    async def upload_image(id: str, file: UploadFile = File(...)):
+    async def upload_image(id: str, file: UploadFile = File(...), image_folder="images"):
         """
             Takes a project id and a file and preprocesses and puts the image 
             into the correct path
@@ -183,9 +184,9 @@ def fastapi_app():
         func_start = time.time()
         print(f"{Colors.CYAN}📤 [upload_image] ENTER - id={id}, filename={file.filename}, content_type={file.content_type}{Colors.RESET}")
         
-        path = vol_mnt_loc / "backend_data" / "reconstructions" / id / "images"
+        path = vol_mnt_loc / "backend_data" / "reconstructions" / id / image_folder
         print(f"{Colors.MAGENTA}   Target path: {path}{Colors.RESET}")
-        
+        os.makedirs(path, exist_ok=True)
         if not os.path.exists(path) or not os.path.isdir(path):
             print(f"{Colors.RED}❌ ERROR: Path does not exist or is not a directory: {path}{Colors.RESET}")
             raise HTTPException(status_code=400,
@@ -424,13 +425,129 @@ def fastapi_app():
         return [str(p) for p in ply_paths]
 
 
+    @web_app.post("/scene/{id}")
+    async def create_scene_metadata(id: str, thumbnail: UploadFile = File(...)):
+        """
+        Creates a new scene directory if it doesn't exist.
+        Saves the thumbnail to the scene directory.
+        """
+        endpoint_start = time.time()
+        print(f"\n{'='*80}")
+        print(f"{Colors.CYAN}🚀 [POST /scene/{id}] ENDPOINT CALLED{Colors.RESET}")
+        print(f"{'='*80}\n")
+
+        # STEP 0: Create scene directory if it doesn't exist
+        step0_start = time.time()
+        scene_path = Path(vol_mnt_loc) / "backend_data" / "reconstructions" / id
+        scene_path.mkdir(parents=True, exist_ok=True)
+        volume.commit()
+        log_time("STEP 0: Create Scene Directory", step0_start)
+        print(f"{Colors.GREEN}✅ Scene directory created at {scene_path}{Colors.RESET}\n")
+
+        # STEP 1: Upload and preprocess thumbnail
+        step1_start = time.time()
+        volume.reload()
+        uploaded = await upload_image(id, thumbnail, "thumbnails")
+        log_time("STEP 1: Upload Thumbnail", step1_start)
+        print(f"{Colors.GREEN}✅ Thumbnail uploaded successfully to {uploaded}{Colors.RESET}\n")
+        return {"thumbnail_path": str(uploaded)}
+
+    
+    @web_app.get("/scene/{id}")
+    async def get_scene_metadata(id: str):
+        """
+        Gets a scene metadata by id.
+        Returns the thumbnail as a base64 encoded string.
+        """
+        thumbnails_folder = Path(vol_mnt_loc) / "backend_data" / "reconstructions" / id / "thumbnails"
+        
+        if not thumbnails_folder.exists():
+            raise HTTPException(status_code=404, detail=f"Scene {id} not found")
+        
+        # Find first image file in thumbnails folder
+        thumbnail_files = list(thumbnails_folder.glob("*"))
+        thumbnail_files = [f for f in thumbnail_files if f.is_file() and f.suffix.lower() in ['.png', '.jpg', '.jpeg']]
+        
+        if not thumbnail_files:
+            raise HTTPException(status_code=404, detail=f"No thumbnail found for scene {id}")
+        
+        thumbnail_path = thumbnail_files[0]
+        image = Image.open(thumbnail_path)
+        
+        # Convert image to bytes buffer for base64 encoding
+        import io
+        buffer = io.BytesIO()
+        image.save(buffer, format='PNG')
+        image_base64 = base64.b64encode(buffer.getvalue()).decode('utf-8')
+        
+        return {"thumbnail_path": image_base64}
+    
+    @web_app.get("/scenes")
+    async def get_scenes_metadata():
+        """
+        Gets all scenes metadata.
+        Returns a list of scenes metadata.
+        """
+        scenes_path = Path(vol_mnt_loc) / "backend_data" / "reconstructions"
+        
+        if not scenes_path.exists():
+            return {"scenes": []}
+        
+        scenes = [s for s in scenes_path.glob("*") if s.is_dir()]
+        scene_dicts = []
+        
+        for scene in scenes:
+            thumbnails_folder = scene / "thumbnails"
+            
+            if not thumbnails_folder.exists():
+                continue
+            
+            # Find first image file in thumbnails folder
+            thumbnail_files = list(thumbnails_folder.glob("*"))
+            thumbnail_files = [f for f in thumbnail_files if f.is_file() and f.suffix.lower() in ['.png', '.jpg', '.jpeg']]
+            
+            if not thumbnail_files:
+                continue
+            
+            thumbnail_path = thumbnail_files[0]
+            
+            try:
+                image = Image.open(thumbnail_path)
+                
+                # Convert image to bytes buffer for base64 encoding
+                import io
+                buffer = io.BytesIO()
+                image.save(buffer, format='PNG')
+                image_base64 = base64.b64encode(buffer.getvalue()).decode('utf-8')
+                
+                scene_dicts.append({
+                    "name": scene.name,
+                    "thumbnail": image_base64
+                })
+            except Exception as e:
+                print(f"{Colors.RED}⚠️  WARNING: Failed to load thumbnail for scene {scene.name}: {e}{Colors.RESET}")
+                continue
+        
+        return {"scenes": scene_dicts}
+    
     @web_app.post("/pointcloud/{id}")
     async def new_image(id: str, file: UploadFile = File(...), background_tasks: BackgroundTasks = None):
+        """
+        Creates a new image in a scene.
+        """
+        
         endpoint_start = time.time()
         print(f"\n{'='*80}")
         print(f"{Colors.CYAN}🚀 [POST /pointcloud/{id}] ENDPOINT CALLED{Colors.RESET}")
         print(f"{Colors.MAGENTA}   File: {file.filename}, Type: {file.content_type}{Colors.RESET}")
         print(f"{'='*80}\n")
+
+        # # STEP 0: Create scene directory if it doesn't exist
+        # step0_start = time.time()
+        # scene_path = Path(vol_mnt_loc) / "backend_data" / "reconstructions" / id
+        # scene_path.mkdir(parents=True, exist_ok=True)
+        # log_time("STEP 0: Create Scene Directory", step0_start)
+        # print(f"{Colors.GREEN}✅ Scene directory created at {scene_path}{Colors.RESET}\n")
         
         # STEP 1: Upload and preprocess image
         step1_start = time.time()

@@ -14,6 +14,70 @@
 
     <!-- CATEGORIES -->
     <section class="categories container">
+      <!-- User Scenes Category -->
+      <div v-if="userScenes.length > 0 || true" class="category">
+        <div class="category__head">
+          <h2>Mis Escenas</h2>
+        </div>
+
+        <div class="grid">
+          <!-- Add Scene Card -->
+          <article
+            class="card add-scene-card"
+            tabindex="0"
+            @click="openModal"
+            @keydown.enter="openModal"
+            @keydown.space.prevent="openModal"
+          >
+            <div class="thumb add-thumb">
+              <svg class="plus-icon" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M12 5v14M5 12h14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </div>
+
+            <div class="card__body">
+              <h3 class="card__title">Crear Nueva Escena</h3>
+              <p class="card__sub">Sube imágenes para reconstruir</p>
+            </div>
+          </article>
+
+          <!-- User Scene Cards -->
+          <article
+            v-for="scene in userScenes"
+            :key="scene.id"
+            class="card"
+            tabindex="0"
+          >
+            <div class="thumb">
+              <img
+                :src="scene.img"
+                :alt="scene.title"
+                loading="lazy"
+                decoding="async"
+                @error="onImgError($event)"
+              />
+            </div>
+
+            <div class="card__body">
+              <h3 class="card__title">{{ scene.title }}</h3>
+              <p class="card__sub">{{ scene.subtitle }}</p>
+
+              <router-link
+                class="btn"
+                :to="{ name: 'viewer', query: { id: scene.id } }"
+                :aria-label="`Ver ${scene.title} en el visor`"
+              >
+                <svg class="btn__icon" viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M5 12h12M13 5l7 7-7 7" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+                View
+              </router-link>
+            </div>
+          </article>
+        </div>
+      </div>
+
+      <!-- Demo Categories -->
       <div
         v-for="cat in categories"
         :key="cat.key"
@@ -48,7 +112,7 @@
               <router-link
                 class="btn"
                 :to="{ name: 'viewer', query: { id: item.id } }"
-                aria-label="Ver {{ item.title }} en el visor"
+                :aria-label="`Ver ${item.title} en el visor`"
               >
                 <svg class="btn__icon" viewBox="0 0 24 24" aria-hidden="true">
                   <path d="M5 12h12M13 5l7 7-7 7" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
@@ -60,13 +124,27 @@
         </div>
       </div>
     </section>
+
+    <!-- Scene Creation Modal -->
+    <SceneModal v-if="showModal" @close="closeModal" @created="handleSceneCreated" />
   </div>
 </template>
 
 <script setup>
 import NavBar from '@/components/NavBar.vue'
-import { reactive } from 'vue'
+import SceneModal from '@/components/SceneModal.vue'
+import { reactive, ref, onMounted } from 'vue'
 
+// API base
+const API_BASE = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/+$/, '')
+
+// Modal state
+const showModal = ref(false)
+
+// User scenes from backend
+const userScenes = ref([])
+
+// Demo categories (hardcoded)
 const categories = reactive([
   {
     key: 'patrimonio',
@@ -90,6 +168,47 @@ const categories = reactive([
     ],
   },
 ])
+
+// Fetch user scenes from backend
+async function fetchUserScenes() {
+  try {
+    const res = await fetch(`${API_BASE}/scenes`)
+    if (!res.ok) throw new Error(`Error ${res.status}`)
+    
+    const data = await res.json()
+    
+    // Map backend response to card format
+    userScenes.value = (data.scenes || []).map(scene => ({
+      id: scene.name,
+      title: scene.name,
+      subtitle: 'Escena personalizada',
+      img: `data:image/png;base64,${scene.thumbnail}`
+    }))
+  } catch (err) {
+    console.error('Failed to fetch user scenes:', err)
+    // Silent fail - just show empty user scenes
+    userScenes.value = []
+  }
+}
+
+// Modal handlers
+function openModal() {
+  showModal.value = true
+}
+
+function closeModal() {
+  showModal.value = false
+}
+
+async function handleSceneCreated(sceneName) {
+  // Refetch scenes to include the new one
+  await fetchUserScenes()
+}
+
+// Load user scenes on mount
+onMounted(() => {
+  fetchUserScenes()
+})
 
 function onImgError(e) {
   const svg = encodeURIComponent(`
@@ -310,10 +429,54 @@ function onImgError(e) {
   transform: translateY(-1px);
 }
 
+/* ====== Add Scene Card ====== */
+.add-scene-card {
+  cursor: pointer;
+  border-style: dashed;
+  border-width: 2px;
+  border-color: var(--card-stroke);
+  background: transparent;
+}
+
+.add-scene-card:hover,
+.add-scene-card:focus-visible {
+  border-color: var(--accent);
+  background: var(--card);
+}
+
+.add-thumb {
+  background: transparent;
+  display: grid;
+  place-items: center;
+}
+
+.plus-icon {
+  width: 60px;
+  height: 60px;
+  color: var(--muted);
+  transition: color 0.2s, transform 0.2s;
+}
+
+.add-scene-card:hover .plus-icon,
+.add-scene-card:focus-visible .plus-icon {
+  color: var(--accent);
+  transform: scale(1.1);
+}
+
+.add-scene-card .card__title {
+  color: var(--muted);
+}
+
+.add-scene-card:hover .card__title,
+.add-scene-card:focus-visible .card__title {
+  color: var(--text);
+}
+
 /* ====== Motion preferences ====== */
 @media (prefers-reduced-motion: reduce) {
   .hero__bg,
   .card,
-  .btn { transition: none; animation: none; }
+  .btn,
+  .plus-icon { transition: none; animation: none; }
 }
 </style>
