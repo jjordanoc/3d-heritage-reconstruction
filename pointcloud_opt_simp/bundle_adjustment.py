@@ -10,12 +10,12 @@ import time # [EDIT] Import time for auto-close
 # !! Make sure this path is correct for your system !!
 # !! You may need to unzip 'pointclouds.zip' first !!
 # ---!!!--- IMPORTANT ---!!!---
-data_dir = './data/pointclouds/' 
+data_dir = './data/pointclouds/sample1_results_ply_only' 
 
 # --- Parameters ---
 ROTATION_WEIGHT = 1.0 
 POSITION_WEIGHT = 30.0
-MAX_NEIGHBOR_SCORE = 150.0  
+MAX_NEIGHBOR_SCORE = 150.0
 
 # [REGISTRATION] New parameters for ICP
 # This is the most important parameter to tune.
