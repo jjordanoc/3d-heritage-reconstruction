@@ -88,6 +88,7 @@ export default {
 
       _pickables: [],
       _currentObject: null,
+      _fadingObjects: [],
 
       // Helpers
       _axes: null,
@@ -288,7 +289,15 @@ export default {
   beforeUnmount() { this._cleanup && this._cleanup() },
 
   methods: {
-    async loadById(id) {
+    async loadById(id, preserveCamera = false) {
+      // Save current camera state if preserving
+      let savedCameraPos = null
+      let savedCameraTarget = null
+      if (preserveCamera && this._camera && this._orbit) {
+        savedCameraPos = this._camera.position.clone()
+        savedCameraTarget = this._orbit.target.clone()
+      }
+
       const base = API_BASE
       const url = `${base}/pointcloud/${encodeURIComponent(id)}/latest`
       const res = await fetch(url)
@@ -382,7 +391,15 @@ export default {
       if ('minDistance' in this._orbit) this._orbit.minDistance = Math.max(maxDim * 0.02, 0.001)
       if ('maxDistance' in this._orbit) this._orbit.maxDistance = Math.max(maxDim * 20, 10)
 
-      if (cameraCv) {
+      // Handle camera positioning
+      if (preserveCamera && savedCameraPos && savedCameraTarget) {
+        // Restore saved camera position
+        this._camera.matrixAutoUpdate = true
+        this._camera.position.copy(savedCameraPos)
+        this._orbit.target.copy(savedCameraTarget)
+        this._camera.updateProjectionMatrix()
+        this._orbit.update()
+      } else if (cameraCv) {
         this._applyOpenCVCameraToWorld(cameraCv, true)
       } else {
         this._frameToBBox()
@@ -456,6 +473,81 @@ export default {
 
       if (cameraCv) this._applyOpenCVCameraToWorld(cameraCv, true)
       this._updatePivotViz()
+    },
+
+    async reloadPointCloud(id) {
+      // Fade out current objects, then reload
+      await this._fadeOutCurrentObjects()
+      await this.loadById(id, true) // preserveCamera = true
+      this.$emit('loadComplete')
+    },
+
+    async _fadeOutCurrentObjects() {
+      if (this._pickables.length === 0) return
+
+      // Move current objects to fading array
+      const objectsToFade = [...this._pickables]
+      this._fadingObjects.push(...objectsToFade)
+      
+      // Clear current pickables
+      this._pickables = []
+      this._currentObject = null
+
+      // Enable transparency on materials
+      for (const obj of objectsToFade) {
+        const mat = obj.material
+        if (mat) {
+          if (Array.isArray(mat)) {
+            mat.forEach(m => {
+              m.transparent = true
+              m.opacity = 1.0
+            })
+          } else {
+            mat.transparent = true
+            mat.opacity = 1.0
+          }
+        }
+      }
+
+      // Animate fade out
+      const fadeDuration = 1200 // 1.2 seconds
+      const startTime = Date.now()
+
+      return new Promise((resolve) => {
+        const animateFade = () => {
+          const elapsed = Date.now() - startTime
+          const progress = Math.min(elapsed / fadeDuration, 1.0)
+          const opacity = 1.0 - progress
+
+          for (const obj of objectsToFade) {
+            const mat = obj.material
+            if (mat) {
+              if (Array.isArray(mat)) {
+                mat.forEach(m => { m.opacity = opacity })
+              } else {
+                mat.opacity = opacity
+              }
+            }
+          }
+
+          if (progress < 1.0) {
+            requestAnimationFrame(animateFade)
+          } else {
+            // Fade complete, dispose objects
+            for (const obj of objectsToFade) {
+              this._scene.remove(obj)
+              obj.geometry?.dispose?.()
+              const m = obj.material
+              if (Array.isArray(m)) m.forEach(mm => mm?.dispose?.())
+              else m?.dispose?.()
+            }
+            // Remove from fading array
+            this._fadingObjects = this._fadingObjects.filter(o => !objectsToFade.includes(o))
+            resolve()
+          }
+        }
+        animateFade()
+      })
     },
 
     // === Utilidades de cámara ===

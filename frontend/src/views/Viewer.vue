@@ -2,12 +2,18 @@
   <div class="page">
     <Suspense>
       <template #default>
-        <AsyncPLYViewer ref="viewerRef" />
+        <AsyncPLYViewer ref="viewerRef" @loadComplete="onLoadComplete" />
       </template>
       <template #fallback>
         <div class="loading">Cargando visor…</div>
       </template>
     </Suspense>
+
+    <!-- Loading overlay during re-fetch -->
+    <div v-if="reloading" class="loading-overlay">
+      <div class="spinner"></div>
+      <p>Cargando...</p>
+    </div>
 
     <!-- Overlay inferior -->
     <div class="upload-bar">
@@ -45,6 +51,7 @@ const viewerRef = ref(null)
 const fileInput = ref(null)
 const selectedFile = ref(null)
 const uploading = ref(false)
+const reloading = ref(false)
 
 onMounted(() => {
   document.body.classList.add('no-scroll')
@@ -70,6 +77,11 @@ function discardFile() {
   fileInput.value.value = ''
 }
 
+function onLoadComplete() {
+  uploading.value = false
+  reloading.value = false
+}
+
 async function uploadFile() {
   if (!selectedFile.value) return
   uploading.value = true
@@ -92,20 +104,21 @@ async function uploadFile() {
 
     if (!res.ok) throw new Error(`Error ${res.status}`)
     
-    // Obtener respuesta multipart
-    const contentType = res.headers.get('content-type') || ''
-    const buffer = await res.arrayBuffer()
-
-    // Pasar al viewer para actualización incremental
-    await viewerRef.value?.addIncrementalPoints(buffer, contentType)
-
+    // Expect JSON response {"success": true}
+    const data = await res.json()
+    
+    if (data.success) {
+      // Trigger reload with fade animation
+      reloading.value = true
+      await viewerRef.value?.reloadPointCloud(id)
+    }
     
     discardFile()
   } catch (err) {
     console.error(err)
     alert('Error al subir imagen.')
-  } finally {
     uploading.value = false
+    reloading.value = false
   }
 }
 </script>
@@ -166,4 +179,42 @@ async function uploadFile() {
 .btn.primary:hover { background: #1e4fba; }
 .btn.danger { background: #ef4444; border-color: #ef4444; }
 .btn.danger:hover { background: #b91c1c; }
+
+/* Loading overlay */
+.loading-overlay {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  background: rgba(11, 13, 18, 0.85);
+  backdrop-filter: blur(8px);
+  padding: 24px 32px;
+  border-radius: 16px;
+  border: 1px solid rgba(255,255,255,0.15);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  z-index: 100;
+}
+
+.loading-overlay p {
+  margin: 0;
+  color: #e6e9ef;
+  font-size: 16px;
+  font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+}
+
+.spinner {
+  width: 40px;
+  height: 40px;
+  border: 3px solid rgba(124,172,248,0.2);
+  border-top-color: #7cacf8;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
 </style>

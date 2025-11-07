@@ -1,6 +1,7 @@
 import modal
 from fastapi.responses import HTMLResponse
 from fastapi import UploadFile, File, HTTPException
+from fastapi.concurrency import run_in_threadpool
 from pathlib import Path
 import time
 import base64
@@ -588,44 +589,48 @@ def fastapi_app():
             raise HTTPException(status_code=500, detail="Failed to extract pointcloud from last image")
         
         # STEP 5: Schedule full reconstruction in the background (non-blocking)
-        step5_start = time.time()
-        if background_tasks:
-            background_tasks.add_task(process_infered_data, str(inference_path), id, 0)
-            background_tasks.add_task(process_infered_data_per_image, str(inference_path), id, 0)
-            print(f"{Colors.CYAN}🔄 Scheduled background tasks for full reconstruction{Colors.RESET}")
-        else:
-            print(f"{Colors.RED}⚠️  WARNING: No background_tasks available, skipping background processing{Colors.RESET}")
-        log_time("STEP 5: Schedule Background Tasks", step5_start)
+        # step5_start = time.time()
+        # if background_tasks:
+        #     background_tasks.add_task(process_infered_data, str(inference_path), id, 0)
+        #     background_tasks.add_task(process_infered_data_per_image, str(inference_path), id, 0)
+        #     print(f"{Colors.CYAN}🔄 Scheduled background tasks for full reconstruction{Colors.RESET}")
+        # else:
+        #     print(f"{Colors.RED}⚠️  WARNING: No background_tasks available, skipping background processing{Colors.RESET}")
+        # log_time("STEP 5: Schedule Background Tasks", step5_start)
         
         # STEP 6: Read PLY and prepare response
-        step6_start = time.time()
-        read_start = time.time()
-        with open(temp_ply_path, 'rb') as f:
-            ply_data = f.read()
-        ply_size = len(ply_data)
-        print(f"{Colors.MAGENTA}   Read PLY file: {ply_size / 1024:.2f} KB{Colors.RESET}")
-        log_time("Read PLY file", read_start)
+        # step6_start = time.time()
+        # read_start = time.time()
+        # with open(temp_ply_path, 'rb') as f:
+        #     ply_data = f.read()
+        # ply_size = len(ply_data)
+        # print(f"{Colors.MAGENTA}   Read PLY file: {ply_size / 1024:.2f} KB{Colors.RESET}")
+        # log_time("Read PLY file", read_start)
         
-        # Build multipart response with pointcloud and camera pose
-        encode_start = time.time()
-        multipart_data = MultipartEncoder(
-            fields={
-                'pointcloud': (f"{id}_latest.ply", ply_data, 'application/octet-stream'),
-                'camera_pose': json.dumps(camera_pose) if camera_pose is not None else json.dumps(None)
-            }
-        )
-        log_time("Encode multipart response", encode_start)
-        log_time("STEP 6: Prepare Response", step6_start)
+        # # Build multipart response with pointcloud and camera pose
+        # encode_start = time.time()
+        # multipart_data = MultipartEncoder(
+        #     fields={
+        #         'pointcloud': (f"{id}_latest.ply", ply_data, 'application/octet-stream'),
+        #         'camera_pose': json.dumps(camera_pose) if camera_pose is not None else json.dumps(None)
+        #     }
+        # )
+        # log_time("Encode multipart response", encode_start)
+        # log_time("STEP 6: Prepare Response", step6_start)
+
+        # process inferred data 
+        await run_in_threadpool(process_infered_data, str(inference_path), id, 0)
         
         print(f"\n{'='*80}")
         print(f"{Colors.GREEN}✅ [POST /pointcloud/{id}] ENDPOINT COMPLETE{Colors.RESET}")
         log_time("🎯 TOTAL ENDPOINT TIME", endpoint_start)
         print(f"{'='*80}\n")
-        
-        return Response(
-            content=multipart_data.to_string(),
-            media_type=multipart_data.content_type
-        )
+        # return a simple json response signaling success so user can refetch the model
+        return {"success": True}
+        # return Response(
+        #     content=multipart_data.to_string(),
+        #     media_type=multipart_data.content_type
+        # )
 
     @web_app.get("/pointcloud/{pc_id}/{tag}")
     async def get_pointcloud(pc_id: str, tag: str):
