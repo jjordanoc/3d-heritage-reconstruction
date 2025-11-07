@@ -573,14 +573,14 @@ def fastapi_app():
 
         import shutil
         copy_start = time.time()
-        shutil.copy2(inference_path, str(standard_predictions_path))
+        shutil.copy2(inference_path, str(standard_predictions_path)) # race condition!!!!
         log_time("Copy predictions.pt", copy_start)
         print(f"{Colors.GREEN}✅ Saved predictions to {standard_predictions_path}{Colors.RESET}")
         log_time("STEP 3: Save Predictions", step3_start)
 
         # STEP 4: Extract last image's pointcloud and camera pose for immediate response
         step4_start = time.time()
-        temp_ply_path, camera_pose = extract_last_image_pointcloud(str(inference_path), id)
+        temp_ply_path, camera_pose = extract_last_image_pointcloud(str(inference_path), id) # race condition!!!!
         log_time("STEP 4: Extract Last Image PLY", step4_start)
         
         if temp_ply_path is None:

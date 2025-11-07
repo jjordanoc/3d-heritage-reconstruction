@@ -70,6 +70,8 @@ class ModelInference:
         import glob
         import torch
         
+        # ensure latest changes are fetched from volume!
+        volume.reload()
         
         # Generate unique ID for this prediction
         pred_uuid = str(uuid.uuid4())

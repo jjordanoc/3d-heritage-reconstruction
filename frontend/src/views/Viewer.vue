@@ -98,13 +98,7 @@ async function uploadFile() {
 
     // Pasar al viewer para actualización incremental
     await viewerRef.value?.addIncrementalPoints(buffer, contentType)
-    
-    // Programar GET completo después de 1 minuto
-    console.log('[Viewer] Scheduling full reconstruction fetch in 60 seconds...')
-    setTimeout(() => {
-      console.log('[Viewer] Fetching full reconstruction...')
-      viewerRef.value?.loadById(id)
-    }, 60000) // 60 segundos
+
     
     discardFile()
   } catch (err) {
