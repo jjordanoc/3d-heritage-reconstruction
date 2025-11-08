@@ -21,8 +21,14 @@ def log_time(label, start_time):
     print(f"{Colors.YELLOW}⏱️  [{label}] took {elapsed:.3f}s{Colors.RESET}")
     return elapsed
 
+
+cuda_version = "12.6.3"  # should be no greater than host CUDA version
+flavor = "cudnn-devel"  # includes full CUDA toolkit
+operating_sys = "ubuntu22.04"
+tag = f"{cuda_version}-{flavor}-{operating_sys}"
+
 # environment stuff
-image = modal.Image.debian_slim(python_version="3.10").apt_install(
+image = modal.Image.from_registry(f"nvidia/cuda:{tag}", add_python="3.10").apt_install(
         "git",  # if you need it
         "libgl1-mesa-glx",  # Provides libGL.so.1
         "libglib2.0-0",     # Often needed by Open3D
@@ -37,9 +43,19 @@ image = modal.Image.debian_slim(python_version="3.10").apt_install(
         "requests-toolbelt",
         "pycolmap==3.10.0",
         "gsplat"
-    ]).run_commands(
+    ]).apt_install( # need clang for gsplat's (examples) dependencies
+        "build-essential",
+        "curl",
+        "unzip",
+        "wget",
+        "clang",
+        "libglib2.0-0",
+        "libgomp1",
+    ).run_commands( # need to install gsplat (examples) dependencies manually, says nowhere in docs
       "git clone https://github.com/nerfstudio-project/gsplat.git",
-      "cd gsplat/examples && pip install -r requirements.txt",
+      "cd gsplat/examples && pip install --no-build-isolation -r requirements.txt",
+    ).pip_install( # gsplat (examples) installs a completely different fork
+      "pycolmap==3.10.0"
     )
     # .run_commands(
     #   "pip install git+https://github.com/nerfstudio-project/gsplat.git",
