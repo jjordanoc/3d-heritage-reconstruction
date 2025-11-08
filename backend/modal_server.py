@@ -33,7 +33,8 @@ image = modal.Image.debian_slim(python_version="3.10").apt_install(
         "torch",
         "numpy",
         "open3d",
-        "requests-toolbelt"
+        "requests-toolbelt",
+        "pycolmap"
     ])
 
 volume = modal.Volume.from_name(name="ut3c-heritage", create_if_missing=True)
@@ -700,5 +701,225 @@ def fastapi_app():
             content=multipart_data.to_string(),
             media_type=multipart_data.content_type
         )
+
+    async def process_colmap_ba(scene_id: str):
+        """
+        Background task to run COLMAP bundle adjustment pipeline.
+        
+        Args:
+            scene_id: The scene/reconstruction ID
+        """
+        func_start = time.time()
+        print(f"\n{'='*80}")
+        print(f"{Colors.CYAN}🔧 [BACKGROUND: process_colmap_ba] STARTING for scene {scene_id}{Colors.RESET}")
+        print(f"{'='*80}\n")
+        
+        try:
+            # Reload volume to get latest data
+            reload_start = time.time()
+            volume.reload()
+            log_time("Volume reload", reload_start)
+            
+            # Define paths
+            scene_path = Path(vol_mnt_loc) / "backend_data" / "reconstructions" / scene_id
+            predictions_path = scene_path / "predictions.pt"
+            images_dir = scene_path / "images"
+            colmap_base_dir = scene_path / "colmap"
+            
+            print(f"{Colors.MAGENTA}   Predictions: {predictions_path}{Colors.RESET}")
+            print(f"{Colors.MAGENTA}   Images dir: {images_dir}{Colors.RESET}")
+            print(f"{Colors.MAGENTA}   Output dir: {colmap_base_dir}{Colors.RESET}")
+            
+            # Validate inputs
+            if not predictions_path.exists():
+                raise FileNotFoundError(f"predictions.pt not found at {predictions_path}")
+            
+            if not images_dir.exists() or not any(images_dir.iterdir()):
+                raise FileNotFoundError(f"No images found in {images_dir}")
+            
+            # Import conversion and BA modules
+            import sys
+            backend_path = Path(__file__).parent
+            if str(backend_path) not in sys.path:
+                sys.path.insert(0, str(backend_path))
+            
+            from pi3_to_colmap import pi3_to_colmap_sparse
+            from colmap_ba_pipeline import run_bundle_adjustment
+            
+            # Step 1: Convert Pi³ to COLMAP
+            sparse_initial_dir = colmap_base_dir / "sparse_initial"
+            print(f"\n{Colors.CYAN}STEP 1: Converting Pi³ predictions to COLMAP...{Colors.RESET}")
+            convert_start = time.time()
+            
+            reconstruction_initial = pi3_to_colmap_sparse(
+                predictions_path=predictions_path,
+                images_dir=images_dir,
+                output_dir=sparse_initial_dir,
+                conf_threshold=0.1,
+                max_points=100000,
+                min_track_length=2,
+                shared_camera=True
+            )
+            
+            log_time("Pi³ to COLMAP conversion", convert_start)
+            print(f"{Colors.GREEN}✅ Initial COLMAP reconstruction saved to {sparse_initial_dir}{Colors.RESET}")
+            
+            # Step 2: Run bundle adjustment
+            sparse_ba_dir = colmap_base_dir / "sparse_ba"
+            print(f"\n{Colors.CYAN}STEP 2: Running bundle adjustment...{Colors.RESET}")
+            ba_start = time.time()
+            
+            ba_results = run_bundle_adjustment(
+                input_dir=sparse_initial_dir,
+                output_dir=sparse_ba_dir,
+                ba_options=None,  # Use defaults
+                validate=True
+            )
+            
+            log_time("Bundle adjustment", ba_start)
+            print(f"{Colors.GREEN}✅ Refined COLMAP reconstruction saved to {sparse_ba_dir}{Colors.RESET}")
+            
+            # Save results summary
+            results_file = colmap_base_dir / "ba_results.json"
+            with open(results_file, 'w') as f:
+                json.dump(ba_results, f, indent=2)
+            
+            print(f"{Colors.GREEN}✅ Results summary saved to {results_file}{Colors.RESET}")
+            
+            # Commit volume
+            commit_start = time.time()
+            volume.commit()
+            log_time("Volume commit", commit_start)
+            
+            print(f"\n{'='*80}")
+            print(f"{Colors.GREEN}✅ [BACKGROUND: process_colmap_ba] COMPLETE for scene {scene_id}{Colors.RESET}")
+            print(f"   Mean reprojection error: {ba_results['initial_error']['mean']:.3f} → {ba_results['final_error']['mean']:.3f} pixels")
+            log_time("🎯 TOTAL BACKGROUND TASK TIME", func_start)
+            print(f"{'='*80}\n")
+            
+        except Exception as e:
+            print(f"\n{'='*80}")
+            print(f"{Colors.RED}❌ [BACKGROUND: process_colmap_ba] FAILED for scene {scene_id}{Colors.RESET}")
+            print(f"{Colors.RED}   Error: {str(e)}{Colors.RESET}")
+            print(f"{'='*80}\n")
+            import traceback
+            traceback.print_exc()
+
+    @web_app.post("/scene/{id}/colmap_ba")
+    async def run_colmap_ba_pipeline(id: str, background_tasks: BackgroundTasks):
+        """
+        Post-processing: Convert Pi³ predictions to COLMAP format and run bundle adjustment.
+        Returns immediately with job status, processing happens in background.
+        
+        This endpoint:
+        1. Converts Pi³ predictions to COLMAP sparse reconstruction format
+        2. Runs bundle adjustment to refine camera poses and estimate accurate intrinsics
+        3. Saves results to /backend_data/reconstructions/{id}/colmap/
+        
+        Args:
+            id: Scene/reconstruction ID
+        
+        Returns:
+            JSON with status and job information
+        """
+        endpoint_start = time.time()
+        print(f"\n{'='*80}")
+        print(f"{Colors.CYAN}🚀 [POST /scene/{id}/colmap_ba] ENDPOINT CALLED{Colors.RESET}")
+        print(f"{'='*80}\n")
+        
+        # Validate that predictions.pt exists
+        predictions_path = Path(vol_mnt_loc) / "backend_data" / "reconstructions" / id / "predictions.pt"
+        
+        if not predictions_path.exists():
+            print(f"{Colors.RED}❌ ERROR: predictions.pt not found at {predictions_path}{Colors.RESET}")
+            raise HTTPException(
+                status_code=404,
+                detail=f"No predictions found for scene {id}. Run inference first."
+            )
+        
+        # Add background task
+        background_tasks.add_task(process_colmap_ba, id)
+        
+        print(f"{Colors.GREEN}✅ Background task scheduled for scene {id}{Colors.RESET}")
+        log_time("Endpoint response time", endpoint_start)
+        print(f"{'='*80}\n")
+        
+        return {
+            "status": "processing",
+            "scene_id": id,
+            "message": "COLMAP bundle adjustment pipeline started in background",
+            "check_status_at": f"/scene/{id}/colmap_ba/status"
+        }
+
+    @web_app.get("/scene/{id}/colmap_ba/status")
+    async def get_colmap_ba_status(id: str):
+        """
+        Check the status of COLMAP bundle adjustment processing for a scene.
+        
+        Args:
+            id: Scene/reconstruction ID
+        
+        Returns:
+            JSON with processing status and results (if complete)
+        """
+        endpoint_start = time.time()
+        print(f"\n{'='*80}")
+        print(f"{Colors.CYAN}📊 [GET /scene/{id}/colmap_ba/status] ENDPOINT CALLED{Colors.RESET}")
+        print(f"{'='*80}\n")
+        
+        colmap_dir = Path(vol_mnt_loc) / "backend_data" / "reconstructions" / id / "colmap"
+        sparse_initial_dir = colmap_dir / "sparse_initial"
+        sparse_ba_dir = colmap_dir / "sparse_ba"
+        results_file = colmap_dir / "ba_results.json"
+        
+        # Check if processing is complete
+        if sparse_ba_dir.exists() and results_file.exists():
+            # Load results
+            try:
+                with open(results_file, 'r') as f:
+                    results = json.load(f)
+                
+                print(f"{Colors.GREEN}✅ COLMAP BA processing complete for scene {id}{Colors.RESET}")
+                log_time("Status check", endpoint_start)
+                print(f"{'='*80}\n")
+                
+                return {
+                    "status": "complete",
+                    "scene_id": id,
+                    "initial_reconstruction": str(sparse_initial_dir),
+                    "refined_reconstruction": str(sparse_ba_dir),
+                    "results": results
+                }
+            except Exception as e:
+                print(f"{Colors.RED}⚠️  WARNING: Could not load results file: {e}{Colors.RESET}")
+                return {
+                    "status": "complete",
+                    "scene_id": id,
+                    "initial_reconstruction": str(sparse_initial_dir),
+                    "refined_reconstruction": str(sparse_ba_dir),
+                    "error": "Results file exists but could not be read"
+                }
+        
+        elif sparse_initial_dir.exists():
+            print(f"{Colors.YELLOW}⏳ COLMAP BA processing in progress for scene {id}{Colors.RESET}")
+            log_time("Status check", endpoint_start)
+            print(f"{'='*80}\n")
+            
+            return {
+                "status": "processing",
+                "scene_id": id,
+                "message": "Initial conversion complete, bundle adjustment in progress"
+            }
+        
+        else:
+            print(f"{Colors.YELLOW}⏳ COLMAP BA not started or failed for scene {id}{Colors.RESET}")
+            log_time("Status check", endpoint_start)
+            print(f"{'='*80}\n")
+            
+            return {
+                "status": "not_started",
+                "scene_id": id,
+                "message": "COLMAP bundle adjustment not started or failed"
+            }
 
     return web_app
