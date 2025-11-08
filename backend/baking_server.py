@@ -34,7 +34,7 @@ image = modal.Image.debian_slim(python_version="3.10").apt_install(
         "numpy",
         "open3d",
         "requests-toolbelt",
-        "pycolmap"
+        "pycolmap==3.10.0"
     ])
 
 volume = modal.Volume.from_name(name="ut3c-heritage", create_if_missing=True)
@@ -59,6 +59,7 @@ def fastapi_app():
     import torch
     import numpy as np
     import open3d as o3d
+    import pycolmap
 
     web_app = FastAPI()
     web_app.add_middleware(
@@ -184,27 +185,32 @@ def fastapi_app():
     def filter_points_by_confidence(
         points: np.ndarray,
         conf: np.ndarray,
+        images: np.ndarray,
         conf_threshold: float = 0.1,
         max_points: Optional[int] = None
-    ) -> Tuple[np.ndarray, np.ndarray]:
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
-        Filter 3D points by confidence and optionally limit total count.
+        Filter 3D points by confidence and extract corresponding RGB colors.
         
         Args:
             points: 3D points (N, H, W, 3) or (M, 3)
             conf: Confidence scores (N, H, W, 1) or (M, 1)
+            images: RGB images (N, H, W, 3)
             conf_threshold: Minimum confidence threshold
             max_points: Maximum number of points to keep (random sampling if exceeded)
         
         Returns:
             filtered_points: Filtered 3D points (K, 3)
             filtered_conf: Filtered confidence scores (K,)
+            filtered_colors: Filtered RGB colors (K, 3) in [0, 255] uint8
         """
         # Flatten if necessary
         if points.ndim == 4:
             points = points.reshape(-1, 3)
         if conf.ndim == 4:
             conf = conf.reshape(-1, 1)
+        if images.ndim == 4:
+            images = images.reshape(-1, 3)
         
         conf = conf.squeeze()
         
@@ -212,14 +218,19 @@ def fastapi_app():
         mask = conf >= conf_threshold
         filtered_points = points[mask]
         filtered_conf = conf[mask]
+        filtered_colors = images[mask]
         
         # Limit number of points if requested
         if max_points is not None and len(filtered_points) > max_points:
             indices = np.random.choice(len(filtered_points), max_points, replace=False)
             filtered_points = filtered_points[indices]
             filtered_conf = filtered_conf[indices]
+            filtered_colors = filtered_colors[indices]
         
-        return filtered_points, filtered_conf
+        # Convert colors from [0, 1] to [0, 255] uint8
+        filtered_colors = (filtered_colors * 255).astype(np.uint8)
+        
+        return filtered_points, filtered_conf, filtered_colors
 
 
     def load_image_metadata(images_dir: Path) -> List[Dict]:
@@ -326,12 +337,14 @@ def fastapi_app():
         camera_poses_c2w = predictions['camera_poses'].numpy()  # (B, N, 4, 4)
         points_3d = predictions['points'].numpy()  # (B, N, H, W, 3)
         conf = predictions['conf'].numpy()  # (B, N, H, W, 1)
+        images = predictions['images'].numpy()  # (B, N, H, W, 3)
         
         # Remove batch dimension (assume B=1)
         if camera_poses_c2w.shape[0] == 1:
             camera_poses_c2w = camera_poses_c2w[0]
             points_3d = points_3d[0]
             conf = conf[0]
+            images = images[0]
         
         num_images = len(camera_poses_c2w)
         print(f"Found {num_images} images in predictions")
@@ -343,8 +356,8 @@ def fastapi_app():
         
         # Filter 3D points by confidence
         print(f"Filtering points (threshold={conf_threshold}, max={max_points})...")
-        filtered_points, filtered_conf = filter_points_by_confidence(
-            points_3d, conf, conf_threshold, max_points
+        filtered_points, filtered_conf, filtered_colors = filter_points_by_confidence(
+            points_3d, conf, images, conf_threshold, max_points
         )
         print(f"Kept {len(filtered_points)} points after filtering")
         
@@ -402,52 +415,69 @@ def fastapi_app():
         # Filter points with valid tracks
         filtered_points = filtered_points[valid_point_mask]
         filtered_conf = filtered_conf[valid_point_mask]
+        filtered_colors = filtered_colors[valid_point_mask]
         tracks = [track for track, valid in zip(tracks, valid_point_mask) if valid]
         print(f"Kept {len(filtered_points)} points with sufficient track length")
         
-        # Add 3D points to reconstruction
+        # Add 3D points to reconstruction (without track elements initially)
         print("Adding 3D points to reconstruction...")
         point_ids = []
-        for pt_idx, (pt_3d, track) in enumerate(zip(filtered_points, tracks)):
-            point3D = pycolmap.Point3D()
-            point3D.xyz = pt_3d
-            point3D.color = np.array([128, 128, 128], dtype=np.uint8)  # Gray color
-            point3D.error = 0.0
-            
-            # Add track elements
-            for img_id, pt_2d in track:
-                track_element = pycolmap.Track()
-                track_element.image_id = img_id + 1  # COLMAP uses 1-based indexing
-                track_element.point2D_idx = pt_idx  # Will be updated when adding images
-                point3D.track.add_element(track_element)
-            
-            point_id = reconstruction.add_point3D(point3D)
+        for pt_idx, (pt_3d, color) in enumerate(zip(filtered_points, filtered_colors)):
+            # Create empty track
+            track = pycolmap.Track()
+            # Add point with actual RGB color from Pi³
+            point_id = reconstruction.add_point3D(
+                pt_3d,
+                track,
+                color  # Use actual color from images!
+            )
             point_ids.append(point_id)
         
         # Add images to reconstruction
         print("Adding images to reconstruction...")
         for img_id, (img_meta, pose_w2c) in enumerate(zip(image_metadata, poses_w2c)):
             # Extract rotation and translation
-            qvec = pycolmap.rotmat_to_qvec(pose_w2c[:3, :3])
-            tvec = pose_w2c[:3, 3]
+            cam_from_world = pycolmap.Rigid3d(
+                pycolmap.Rotation3d(pose_w2c[:3, :3]),
+                pose_w2c[:3, 3]
+            )
             
             # Create image
-            image = pycolmap.Image()
-            image.name = img_meta['name']
-            image.camera_id = 1 if shared_camera else img_id + 1
+            image = pycolmap.Image(
+                id=img_id + 1,
+                name=img_meta['name'],
+                camera_id=1 if shared_camera else img_id + 1,
+                cam_from_world=cam_from_world
+            )
             
-            # Set pose
-            image.qvec = qvec
-            image.tvec = tvec
+            # Build Point2D list for this image
+            points2D_list = []
+            point2D_idx = 0
             
-            # Add 2D points
+            # Iterate through all 3D points and check if visible in this image
             for pt_idx, track in enumerate(tracks):
+                point3D_id = point_ids[pt_idx]
+                
+                # Check if this point is visible in current image
                 for track_img_id, pt_2d in track:
                     if track_img_id == img_id:
-                        point2D = pycolmap.Point2D()
-                        point2D.xy = pt_2d
-                        point2D.point3D_id = point_ids[pt_idx]
-                        image.points2D.append(point2D)
+                        # Add Point2D with reference to 3D point
+                        points2D_list.append(
+                            pycolmap.Point2D(pt_2d, point3D_id)
+                        )
+                        
+                        # Add track element to the 3D point
+                        reconstruction.points3D[point3D_id].track.add_element(
+                            img_id + 1,  # image_id (1-based)
+                            point2D_idx  # point2D index in this image's point list
+                        )
+                        
+                        point2D_idx += 1
+                        break  # Each point appears at most once per image
+            
+            # Assign Point2D list to image
+            image.points2D = pycolmap.ListPoint2D(points2D_list)
+            image.registered = True
             
             # Add image to reconstruction
             reconstruction.add_image(image)
