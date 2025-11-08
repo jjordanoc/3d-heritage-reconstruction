@@ -52,8 +52,10 @@ image = modal.Image.from_registry(f"nvidia/cuda:{tag}", add_python="3.10").apt_i
         "libglib2.0-0",
         "libgomp1",
     ).run_commands( # need to install gsplat (examples) dependencies manually, says nowhere in docs
-      "git clone https://github.com/nerfstudio-project/gsplat.git",
-      "cd gsplat/examples && pip install --no-build-isolation -r requirements.txt",
+      "git clone https://github.com/nerfstudio-project/gsplat.git /gsplat",
+      "cd /gsplat && python -m venv /gsplat_env",
+      "/gsplat_env/bin/python -m pip install torch torchvision wheel setuptools",
+      "cd /gsplat/examples && /gsplat_env/bin/python -m pip install --no-build-isolation -r requirements.txt"
     ).pip_install( # gsplat (examples) installs a completely different fork
       "pycolmap==3.10.0"
     )
@@ -1034,7 +1036,7 @@ def fastapi_app():
         # Prepare command
         # Note: gsplat's simple_trainer.py should be in Python path or we use python -m
         cmd = [
-            sys.executable, f"{gsplat_install_path}/examples/simple_trainer.py", "default",
+            "/gsplat_env/bin/python", f"{gsplat_install_path}/examples/simple_trainer.py", "default",
             "--data_dir", str(data_dir),
             "--data_factor", str(data_factor),
             "--result_dir", str(result_dir),
