@@ -173,7 +173,10 @@ def fastapi_app():
             "--data_dir", str(data_dir),
             "--data_factor", str(data_factor),
             "--result_dir", str(result_dir),
-            "--max_steps", str(max_steps)
+            "--max_steps", str(max_steps),
+            "--disable_video",
+            "--disable_viewer",
+            "--save_ply"
         ]
         
         # Create log file
@@ -197,12 +200,17 @@ def fastapi_app():
             )
             
             # Stream output to log file and console
+            i = 0
             for line in process.stdout:
+                print(f"{line}")
                 f.write(line)
                 f.flush()
+                if i % 50 == 0:
+                  volume.commit()
+                i += 1
                 # Print important lines to avoid spam
-                if "Iteration" in line or "Error" in line or "Saving" in line:
-                    print(f"  {line.strip()}")
+                # if "Iteration" in line or "Error" in line or "Saving" in line:
+                    
             
             process.wait()
         
@@ -222,6 +230,9 @@ def fastapi_app():
             print(error_msg)
             raise RuntimeError(error_msg)
         
+        volume.commit()
+        volume.reload()
+        print(f"{Colors.GREEN}✅ Training complete! Volume committed and reloaded{Colors.RESET}")
         # Find the final .ply file
         ply_files = list(result_dir.glob("**/*.ply"))
         if not ply_files:
