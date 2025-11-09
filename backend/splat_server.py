@@ -278,6 +278,33 @@ def fastapi_app():
             if not images_dir.exists() or not any(images_dir.iterdir()):
                 raise FileNotFoundError(f"No images found in {images_dir}")
             
+            # Load and inspect COLMAP reconstruction before training
+            print(f"\n{Colors.CYAN}Inspecting COLMAP reconstruction...{Colors.RESET}")
+            try:
+                import pycolmap
+                recon = pycolmap.Reconstruction(str(sparse_initial_dir))
+                print(f"  Cameras: {recon.num_cameras()}")
+                print(f"  Images: {recon.num_images()}")
+                print(f"  Points3D: {recon.num_points3D()}")
+                
+                print(f"\n  Camera details:")
+                for cam_id, camera in recon.cameras.items():
+                    print(f"    Camera ID {cam_id}: {camera.model}, {camera.width}x{camera.height}")
+                    print(f"      Params: {camera.params}")
+                
+                print(f"\n  Image-to-camera mappings:")
+                for img_id, img in recon.images.items():
+                    print(f"    Image ID {img_id}: '{img.name}' -> camera_id={img.camera_id}")
+                
+                print(f"\n  Files in sparse dir:")
+                for f in sparse_initial_dir.iterdir():
+                    print(f"    {f.name} ({f.stat().st_size} bytes)")
+                    
+            except Exception as e:
+                print(f"{Colors.RED}  Warning: Could not inspect COLMAP reconstruction: {e}{Colors.RESET}")
+                import traceback
+                traceback.print_exc()
+            
             # Prepare data directory structure for gsplat
             # gsplat expects: data_dir/images/ and data_dir/sparse/0/
             # We have: scene_path/images/ and scene_path/colmap/sparse_initial/
@@ -314,6 +341,14 @@ def fastapi_app():
             
             # Run gsplat training
             print(f"\n{Colors.CYAN}Running gsplat training...{Colors.RESET}")
+            print(f"  Verifying gsplat expected structure:")
+            print(f"    data_dir: {scene_path}")
+            print(f"    images/: {(scene_path / 'images').exists()}")
+            print(f"    sparse/0/: {(scene_path / 'sparse' / '0').exists()}")
+            if (scene_path / 'sparse' / '0').exists():
+                sparse_0_files = list((scene_path / 'sparse' / '0').iterdir())
+                print(f"    Files in sparse/0/: {[f.name for f in sparse_0_files]}")
+            
             train_start = time.time()
             
             final_ply_path = run_gsplat_training(

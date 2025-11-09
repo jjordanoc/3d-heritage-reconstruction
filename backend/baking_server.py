@@ -381,6 +381,7 @@ def fastapi_app():
         # Create camera models
         print("Creating camera models...")
         camera_params = []
+        created_camera_ids = []
         
         for img_id, img_meta in enumerate(image_metadata):
             width = img_meta['width']
@@ -407,6 +408,10 @@ def fastapi_app():
                         params=[fx, fy, cx, cy]
                     )
                     camera_id = reconstruction.add_camera(camera)
+                    created_camera_ids.append(camera_id)
+                    print(f"  Created shared camera ID: {camera_id}")
+                    print(f"    Model: PINHOLE, Size: {width}x{height}")
+                    print(f"    fx={fx:.2f}, fy={fy:.2f}, cx={cx:.2f}, cy={cy:.2f}")
             else:
                 camera = pycolmap.Camera(
                     model='PINHOLE',
@@ -415,6 +420,11 @@ def fastapi_app():
                     params=[fx, fy, cx, cy]
                 )
                 camera_id = reconstruction.add_camera(camera)
+                created_camera_ids.append(camera_id)
+                print(f"  Created camera {img_id} with ID: {camera_id}")
+        
+        print(f"Total cameras created: {len(created_camera_ids)}")
+        print(f"Camera IDs: {created_camera_ids}")
         
         # Convert poses to world-to-camera
         print("Converting camera poses...")
@@ -456,11 +466,16 @@ def fastapi_app():
                 pose_w2c[:3, 3]
             )
             
+            # Determine camera_id for this image
+            assigned_camera_id = created_camera_ids[0] if shared_camera else created_camera_ids[img_id]
+            
+            print(f"  Image {img_id}: '{img_meta['name']}' -> camera_id={assigned_camera_id}")
+            
             # Create image
             image = pycolmap.Image(
                 id=img_id + 1,
                 name=img_meta['name'],
-                camera_id=1 if shared_camera else img_id + 1,
+                camera_id=assigned_camera_id,
                 cam_from_world=cam_from_world
             )
             
@@ -506,6 +521,19 @@ def fastapi_app():
         print(f"  Cameras: {reconstruction.num_cameras()}")
         print(f"  Images: {reconstruction.num_images()}")
         print(f"  Points: {reconstruction.num_points3D()}")
+        
+        # Print detailed camera info
+        print(f"\nDetailed camera information:")
+        for cam_id, camera in reconstruction.cameras.items():
+            print(f"  Camera ID {cam_id}:")
+            print(f"    Model: {camera.model}")
+            print(f"    Size: {camera.width}x{camera.height}")
+            print(f"    Params: {camera.params}")
+        
+        # Print image-camera mappings
+        print(f"\nImage-to-camera mappings:")
+        for img_id, img in reconstruction.images.items():
+            print(f"  Image ID {img_id}: '{img.name}' -> camera_id={img.camera_id}, points2D={len(img.points2D)}")
         
         return reconstruction
 
