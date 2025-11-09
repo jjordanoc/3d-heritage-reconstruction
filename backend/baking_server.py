@@ -479,7 +479,7 @@ def fastapi_app():
             
             # Create image
             image = pycolmap.Image(
-                id=img_id + 1,
+                image_id=img_id + 1,
                 name=img_meta['name'],
                 camera_id=assigned_camera_id,
                 cam_from_world=cam_from_world
@@ -628,204 +628,74 @@ def fastapi_app():
         return options
 
 
-    def compute_reprojection_errors(reconstruction: pycolmap.Reconstruction) -> Dict[str, float]:
-        """
-        Compute reprojection error statistics for a reconstruction.
-        
-        Args:
-            reconstruction: COLMAP Reconstruction object
-        
-        Returns:
-            Dictionary with error statistics (mean, median, max, etc.)
-        """
-        errors = []
-        
-        for image_id, image in reconstruction.images.items():
-            camera = reconstruction.cameras[image.camera_id]
-            
-            for point2D in image.points2D:
-                if point2D.point3D_id == -1:
-                    continue
-                
-                point3D = reconstruction.points3D[point2D.point3D_id]
-                
-                # Project 3D point to image
-                projected = camera.img_from_cam(
-                    image.project(point3D.xyz)
-                )
-                
-                # Compute reprojection error
-                error = np.linalg.norm(projected - point2D.xy)
-                errors.append(error)
-        
-        errors = np.array(errors)
-        
-        if len(errors) == 0:
-            return {
-                'mean': 0.0,
-                'median': 0.0,
-                'std': 0.0,
-                'min': 0.0,
-                'max': 0.0,
-                'num_observations': 0
-            }
-        
-        return {
-            'mean': float(np.mean(errors)),
-            'median': float(np.median(errors)),
-            'std': float(np.std(errors)),
-            'min': float(np.min(errors)),
-            'max': float(np.max(errors)),
-            'num_observations': len(errors)
-        }
-
-
-    def validate_reconstruction(
-        reconstruction: pycolmap.Reconstruction,
-        max_reprojection_error: float = 10.0,
-        min_focal_length: float = 0.5,
-        max_focal_length: float = 3.0
-    ) -> Tuple[bool, str]:
-        """
-        Validate reconstruction quality.
-        
-        Args:
-            reconstruction: COLMAP Reconstruction object
-            max_reprojection_error: Maximum acceptable mean reprojection error
-            min_focal_length: Minimum acceptable focal length (as fraction of image size)
-            max_focal_length: Maximum acceptable focal length (as fraction of image size)
-        
-        Returns:
-            (is_valid, message): Validation result and description
-        """
-        # Check if reconstruction has content
-        if reconstruction.num_cameras() == 0:
-            return False, "No cameras in reconstruction"
-        
-        if reconstruction.num_images() == 0:
-            return False, "No images in reconstruction"
-        
-        if reconstruction.num_points3D() == 0:
-            return False, "No 3D points in reconstruction"
-        
-        # Check reprojection errors
-        errors = compute_reprojection_errors(reconstruction)
-        if errors['mean'] > max_reprojection_error:
-            return False, f"Mean reprojection error too high: {errors['mean']:.2f} pixels"
-        
-        # Check camera parameters
-        for camera_id, camera in reconstruction.cameras.items():
-            # Get focal length as fraction of image size
-            focal_x = camera.params[0] / camera.width
-            focal_y = camera.params[1] / camera.height
-            
-            if focal_x < min_focal_length or focal_x > max_focal_length:
-                return False, f"Camera {camera_id}: fx out of range ({focal_x:.2f})"
-            
-            if focal_y < min_focal_length or focal_y > max_focal_length:
-                return False, f"Camera {camera_id}: fy out of range ({focal_y:.2f})"
-            
-            # Check principal point is near center
-            cx_normalized = camera.params[2] / camera.width
-            cy_normalized = camera.params[3] / camera.height
-            
-            if abs(cx_normalized - 0.5) > 0.3:
-                return False, f"Camera {camera_id}: cx too far from center ({cx_normalized:.2f})"
-            
-            if abs(cy_normalized - 0.5) > 0.3:
-                return False, f"Camera {camera_id}: cy too far from center ({cy_normalized:.2f})"
-        
-        return True, f"Valid reconstruction with {errors['mean']:.2f}px mean error"
-
-
     def run_bundle_adjustment(
         input_dir: Path,
         output_dir: Path,
-        ba_options: Optional[pycolmap.BundleAdjustmentOptions] = None,
-        validate: bool = True
+        ba_options: Optional[pycolmap.BundleAdjustmentOptions] = None
     ) -> Dict:
         """
-        Run bundle adjustment on a COLMAP sparse reconstruction.
+        Run bundle adjustment on COLMAP reconstruction.
         
         Args:
             input_dir: Directory containing initial sparse reconstruction
             output_dir: Directory to save refined reconstruction
             ba_options: Bundle adjustment options (uses defaults if None)
-            validate: Whether to validate reconstruction after BA
         
         Returns:
-            Dictionary with results and statistics
+            Dictionary with results
         """
         print(f"Loading reconstruction from {input_dir}...")
-        reconstruction = pycolmap.Reconstruction(input_dir)
+        reconstruction = pycolmap.Reconstruction(str(input_dir))
         
-        # Print initial statistics
-        print(f"\nInitial reconstruction:")
+        print(f"Initial reconstruction:")
         print(f"  Cameras: {reconstruction.num_cameras()}")
         print(f"  Images: {reconstruction.num_images()}")
         print(f"  Points: {reconstruction.num_points3D()}")
         
-        initial_errors = compute_reprojection_errors(reconstruction)
-        print(f"  Initial reprojection error: {initial_errors['mean']:.3f} ± {initial_errors['std']:.3f} pixels")
-        
         # Configure BA options
         if ba_options is None:
-            ba_options = configure_bundle_adjustment_options()
+            # ba_options = configure_bundle_adjustment_options()
+            ba_options = pycolmap.BundleAdjustmentOptions()
         
-        # Run bundle adjustment
-        print("\nRunning bundle adjustment...")
-        summary = pycolmap.bundle_adjustment(reconstruction, ba_options)
+        # Run bundle adjustment (pycolmap handles everything!)
+        print("Running bundle adjustment...")
+        pycolmap.bundle_adjustment(reconstruction, ba_options)
         
-        # Compute final errors
-        final_errors = compute_reprojection_errors(reconstruction)
-        print(f"\nFinal reprojection error: {final_errors['mean']:.3f} ± {final_errors['std']:.3f} pixels")
+        print(f"Bundle adjustment complete!")
         
-        # Print camera parameters
+        # Print refined camera parameters
         print("\nRefined camera parameters:")
         for camera_id, camera in reconstruction.cameras.items():
-            print(f"  Camera {camera_id}: {camera.model}")
+            print(f"  Camera {camera_id}: ")
             print(f"    Size: {camera.width}x{camera.height}")
-            if camera.model == 'PINHOLE':
-                fx, fy, cx, cy = camera.params
-                print(f"    fx={fx:.2f}, fy={fy:.2f}")
-                print(f"    cx={cx:.2f}, cy={cy:.2f}")
-                print(f"    Focal (normalized): fx={fx/camera.width:.3f}, fy={fy/camera.height:.3f}")
-        
-        # Validate reconstruction
-        if validate:
-            is_valid, message = validate_reconstruction(reconstruction)
-            print(f"\nValidation: {'✓ PASS' if is_valid else '✗ FAIL'} - {message}")
-        else:
-            is_valid = True
-            message = "Validation skipped"
+            fx, fy, cx, cy = camera.params
+            print(f"    fx={fx:.2f}, fy={fy:.2f}, cx={cx:.2f}, cy={cy:.2f}")
         
         # Save refined reconstruction
         output_dir.mkdir(parents=True, exist_ok=True)
-        print(f"\nSaving refined reconstruction to {output_dir}...")
-        reconstruction.write(output_dir)
+        print(f"Saving refined reconstruction to {output_dir}...")
+        reconstruction.write(str(output_dir))
+        volume.commit()
+        return {"success": True}
+        # # Return results
+        # results = {
+        #     'success': True,
+        #     'num_cameras': reconstruction.num_cameras(),
+        #     'num_images': reconstruction.num_images(),
+        #     'num_points3D': reconstruction.num_points3D(),
+        #     'camera_params': {}
+        # }
         
-        # Return results
-        results = {
-            'success': is_valid,
-            'validation_message': message,
-            'initial_error': initial_errors,
-            'final_error': final_errors,
-            'num_cameras': reconstruction.num_cameras(),
-            'num_images': reconstruction.num_images(),
-            'num_points3D': reconstruction.num_points3D(),
-            'camera_params': {}
-        }
+        # # Store camera parameters
+        # for camera_id, camera in reconstruction.cameras.items():
+        #     results['camera_params'][camera_id] = {
+        #         'model': camera.model_name,
+        #         'width': camera.width,
+        #         'height': camera.height,
+        #         'params': camera.params.tolist()
+        #     }
         
-        # Store camera parameters
-        for camera_id, camera in reconstruction.cameras.items():
-            results['camera_params'][camera_id] = {
-                'model': str(camera.model),
-                'width': camera.width,
-                'height': camera.height,
-                'params': camera.params.tolist()
-            }
-        
-        return results
+        # return results
 
 
     def run_full_pipeline(
@@ -887,16 +757,19 @@ def fastapi_app():
 
     
 
-    async def process_colmap_ba(scene_id: str):
+    async def process_colmap_ba(scene_id: str, run_ba: bool = False, run_splat: bool = True):
         """
-        Background task to run COLMAP bundle adjustment pipeline.
+        Background task to run COLMAP pipeline with optional bundle adjustment and gaussian splatting.
         
         Args:
             scene_id: The scene/reconstruction ID
+            run_ba: Whether to run bundle adjustment (default: False)
+            run_splat: Whether to train gaussian splatting (default: True)
         """
         func_start = time.time()
         print(f"\n{'='*80}")
         print(f"{Colors.CYAN}🔧 [BACKGROUND: process_colmap_ba] STARTING for scene {scene_id}{Colors.RESET}")
+        print(f"{Colors.CYAN}   Pipeline config: BA={run_ba}, Splat={run_splat}{Colors.RESET}")
         print(f"{'='*80}\n")
         
         try:
@@ -949,38 +822,75 @@ def fastapi_app():
             log_time("Pi³ to COLMAP conversion", convert_start)
             print(f"{Colors.GREEN}✅ Initial COLMAP reconstruction saved to {sparse_initial_dir}{Colors.RESET}")
             
+            # Step 2: Bundle Adjustment (conditional)
+            if run_ba:
+                sparse_ba_dir = colmap_base_dir / "sparse_ba"
+                print(f"\n{Colors.CYAN}STEP 2: Running bundle adjustment...{Colors.RESET}")
+                ba_start = time.time()
+                
+                ba_results = run_bundle_adjustment(
+                    input_dir=sparse_initial_dir,
+                    output_dir=sparse_ba_dir,
+                    ba_options=None  # Use defaults
+                )
+                
+                log_time("Bundle adjustment", ba_start)
+                print(f"{Colors.GREEN}✅ Refined COLMAP reconstruction saved to {sparse_ba_dir}{Colors.RESET}")
+                
+                # Save results summary
+                results_file = colmap_base_dir / "ba_results.json"
+                with open(results_file, 'w') as f:
+                    json.dump(ba_results, f, indent=2)
+                
+                print(f"{Colors.GREEN}✅ BA results summary saved to {results_file}{Colors.RESET}")
+            else:
+                print(f"\n{Colors.YELLOW}STEP 2: Skipping bundle adjustment (run_ba=False){Colors.RESET}")
+            
             # Commit volume so splat_server can read COLMAP data
             commit_start = time.time()
             volume.commit()
             log_time("Volume commit", commit_start)
             print(f"{Colors.GREEN}✅ COLMAP data committed to volume{Colors.RESET}")
             
-            # Step 2: Call splat_server to train Gaussian Splatting
-            print(f"\n{Colors.CYAN}STEP 2: Calling splat_server for gsplat training...{Colors.RESET}")
-            splat_start = time.time()
+            # Step 3: Call splat_server to train Gaussian Splatting (conditional)
+            if run_splat:
+                print(f"\n{Colors.CYAN}STEP 3: Calling splat_server for gsplat training...{Colors.RESET}")
+                splat_start = time.time()
+                
+                try:
+                    # Import splat server function using Modal's cross-app calling
+                    train_gsplat_fn = modal.Function.from_name(
+                        "ut3c-heritage-splat", 
+                        "train_gsplat_modal"
+                    )
+                    
+                    # Call and wait for completion (blocking)
+                    # splat_server will auto-detect whether to use sparse_ba or sparse_initial
+                    train_gsplat_fn.remote(scene_id, data_factor=1, max_steps=30000)
+                    
+                    log_time("Gsplat training", splat_start)
+                    print(f"{Colors.GREEN}✅ Gsplat training completed successfully{Colors.RESET}")
+                    
+                except Exception as e:
+                    # Fail the entire pipeline if gsplat fails
+                    error_msg = f"Gsplat training failed: {str(e)}"
+                    print(f"{Colors.RED}❌ {error_msg}{Colors.RESET}")
+                    raise RuntimeError(error_msg)
+            else:
+                print(f"\n{Colors.YELLOW}STEP 3: Skipping gaussian splatting (run_splat=False){Colors.RESET}")
             
-            try:
-                # Import splat server function using Modal's cross-app calling
-                train_gsplat_fn = modal.Function.from_name(
-                    "ut3c-heritage-splat", 
-                    "train_gsplat_modal"
-                )
-                
-                # Call and wait for completion (blocking)
-                train_gsplat_fn.remote(scene_id, data_factor=1, max_steps=30000)
-                
-                log_time("Gsplat training", splat_start)
-                print(f"{Colors.GREEN}✅ Gsplat training completed successfully{Colors.RESET}")
-                
-            except Exception as e:
-                # Fail the entire pipeline if gsplat fails
-                error_msg = f"Gsplat training failed: {str(e)}"
-                print(f"{Colors.RED}❌ {error_msg}{Colors.RESET}")
-                raise RuntimeError(error_msg)
+            # Save pipeline config for status checking
+            config_file = colmap_base_dir / "pipeline_config.json"
+            with open(config_file, 'w') as f:
+                json.dump({
+                    "bundle_adjustment": run_ba,
+                    "gaussian_splatting": run_splat,
+                    "timestamp": time.time()
+                }, f, indent=2)
             
             print(f"\n{'='*80}")
             print(f"{Colors.GREEN}✅ [BACKGROUND: process_colmap_ba] COMPLETE for scene {scene_id}{Colors.RESET}")
-            print(f"   COLMAP conversion and gsplat training successful")
+            print(f"   Pipeline: BA={run_ba}, Splat={run_splat}")
             log_time("🎯 TOTAL BACKGROUND TASK TIME", func_start)
             print(f"{'='*80}\n")
             
@@ -993,18 +903,26 @@ def fastapi_app():
             traceback.print_exc()
 
     @web_app.post("/scene/{id}/colmap_ba")
-    async def run_colmap_ba_pipeline(id: str, background_tasks: BackgroundTasks):
+    async def run_colmap_ba_pipeline(
+        id: str, 
+        background_tasks: BackgroundTasks,
+        ba: bool = False,
+        splat: bool = True
+    ):
         """
-        Post-processing: Convert Pi³ predictions to COLMAP format and run bundle adjustment.
+        Post-processing: Convert Pi³ predictions to COLMAP format with optional bundle adjustment and gaussian splatting.
         Returns immediately with job status, processing happens in background.
         
         This endpoint:
-        1. Converts Pi³ predictions to COLMAP sparse reconstruction format
-        2. Runs bundle adjustment to refine camera poses and estimate accurate intrinsics
-        3. Saves results to /backend_data/reconstructions/{id}/colmap/
+        1. Converts Pi³ predictions to COLMAP sparse reconstruction format (always)
+        2. Optionally runs bundle adjustment to refine camera poses and intrinsics (if ba=true)
+        3. Optionally trains Gaussian Splatting model (if splat=true, default)
+        4. Saves results to /backend_data/reconstructions/{id}/colmap/
         
         Args:
             id: Scene/reconstruction ID
+            ba: Run bundle adjustment (default: False)
+            splat: Train gaussian splatting (default: True)
         
         Returns:
             JSON with status and job information
@@ -1012,6 +930,7 @@ def fastapi_app():
         endpoint_start = time.time()
         print(f"\n{'='*80}")
         print(f"{Colors.CYAN}🚀 [POST /scene/{id}/colmap_ba] ENDPOINT CALLED{Colors.RESET}")
+        print(f"{Colors.CYAN}   Query params: ba={ba}, splat={splat}{Colors.RESET}")
         print(f"{'='*80}\n")
         
         # Validate that predictions.pt exists
@@ -1024,8 +943,8 @@ def fastapi_app():
                 detail=f"No predictions found for scene {id}. Run inference first."
             )
         
-        # Add background task
-        background_tasks.add_task(process_colmap_ba, id)
+        # Add background task with pipeline configuration
+        background_tasks.add_task(process_colmap_ba, id, ba, splat)
         
         print(f"{Colors.GREEN}✅ Background task scheduled for scene {id}{Colors.RESET}")
         log_time("Endpoint response time", endpoint_start)
@@ -1034,14 +953,18 @@ def fastapi_app():
         return {
             "status": "processing",
             "scene_id": id,
-            "message": "COLMAP bundle adjustment pipeline started in background",
+            "message": "COLMAP pipeline started in background",
+            "pipeline_config": {
+                "bundle_adjustment": ba,
+                "gaussian_splatting": splat
+            },
             "check_status_at": f"/scene/{id}/colmap_ba/status"
         }
 
     @web_app.get("/scene/{id}/colmap_ba/status")
     async def get_colmap_ba_status(id: str):
         """
-        Check the status of COLMAP bundle adjustment processing for a scene.
+        Check the status of COLMAP pipeline processing for a scene.
         
         Args:
             id: Scene/reconstruction ID
@@ -1054,59 +977,128 @@ def fastapi_app():
         print(f"{Colors.CYAN}📊 [GET /scene/{id}/colmap_ba/status] ENDPOINT CALLED{Colors.RESET}")
         print(f"{'='*80}\n")
         
-        colmap_dir = Path(vol_mnt_loc) / "backend_data" / "reconstructions" / id / "colmap"
+        scene_path = Path(vol_mnt_loc) / "backend_data" / "reconstructions" / id
+        colmap_dir = scene_path / "colmap"
         sparse_initial_dir = colmap_dir / "sparse_initial"
         sparse_ba_dir = colmap_dir / "sparse_ba"
-        results_file = colmap_dir / "ba_results.json"
+        ba_results_file = colmap_dir / "ba_results.json"
+        config_file = colmap_dir / "pipeline_config.json"
+        gsplat_dir = scene_path / "gsplat"
+        gsplat_results = gsplat_dir / "results.ply"
+        gsplat_error = gsplat_dir / "error.log"
         
-        # Check if processing is complete
-        if sparse_ba_dir.exists() and results_file.exists():
-            # Load results
+        # Load pipeline config if exists
+        pipeline_config = {"bundle_adjustment": False, "gaussian_splatting": True}
+        if config_file.exists():
             try:
-                with open(results_file, 'r') as f:
-                    results = json.load(f)
+                with open(config_file, 'r') as f:
+                    pipeline_config = json.load(f)
+            except:
+                pass
+        
+        # Check what exists
+        has_initial = sparse_initial_dir.exists()
+        has_ba = sparse_ba_dir.exists()
+        has_gsplat = gsplat_results.exists()
+        has_gsplat_error = gsplat_error.exists()
+        
+        # Determine expected components based on config
+        expects_ba = pipeline_config.get("bundle_adjustment", False)
+        expects_splat = pipeline_config.get("gaussian_splatting", True)
+        
+        # Check for errors
+        if has_gsplat_error and expects_splat:
+            try:
+                with open(gsplat_error, 'r') as f:
+                    error_msg = f.read()
                 
-                print(f"{Colors.GREEN}✅ COLMAP BA processing complete for scene {id}{Colors.RESET}")
+                print(f"{Colors.RED}❌ Pipeline failed for scene {id} (gsplat error){Colors.RESET}")
                 log_time("Status check", endpoint_start)
                 print(f"{'='*80}\n")
                 
                 return {
-                    "status": "complete",
+                    "status": "failed",
                     "scene_id": id,
-                    "initial_reconstruction": str(sparse_initial_dir),
-                    "refined_reconstruction": str(sparse_ba_dir),
-                    "results": results
+                    "pipeline_config": pipeline_config,
+                    "error": error_msg[:500]
                 }
-            except Exception as e:
-                print(f"{Colors.RED}⚠️  WARNING: Could not load results file: {e}{Colors.RESET}")
-                return {
-                    "status": "complete",
-                    "scene_id": id,
-                    "initial_reconstruction": str(sparse_initial_dir),
-                    "refined_reconstruction": str(sparse_ba_dir),
-                    "error": "Results file exists but could not be read"
-                }
+            except:
+                pass
         
-        elif sparse_initial_dir.exists():
-            print(f"{Colors.YELLOW}⏳ COLMAP BA processing in progress for scene {id}{Colors.RESET}")
+        # Determine if pipeline is complete
+        initial_complete = has_initial
+        ba_complete = has_ba if expects_ba else True  # BA complete if not expected or exists
+        splat_complete = has_gsplat if expects_splat else True  # Splat complete if not expected or exists
+        
+        is_complete = initial_complete and ba_complete and splat_complete
+        
+        if is_complete:
+            # Load results
+            results = {}
+            if has_ba and ba_results_file.exists():
+                try:
+                    with open(ba_results_file, 'r') as f:
+                        results["bundle_adjustment"] = json.load(f)
+                except:
+                    pass
+            
+            if has_gsplat:
+                ply_size_mb = gsplat_results.stat().st_size / (1024 * 1024)
+                results["gaussian_splatting"] = {
+                    "model_path": str(gsplat_results),
+                    "model_size_mb": round(ply_size_mb, 2),
+                    "download_url": f"/scene/{id}/gsplat/model"
+                }
+            
+            print(f"{Colors.GREEN}✅ COLMAP pipeline complete for scene {id}{Colors.RESET}")
             log_time("Status check", endpoint_start)
             print(f"{'='*80}\n")
             
             return {
+                "status": "complete",
+                "scene_id": id,
+                "pipeline_config": pipeline_config,
+                "reconstructions": {
+                    "initial": str(sparse_initial_dir) if has_initial else None,
+                    "bundle_adjusted": str(sparse_ba_dir) if has_ba else None
+                },
+                "results": results
+            }
+        
+        elif has_initial:
+            print(f"{Colors.YELLOW}⏳ COLMAP pipeline processing for scene {id}{Colors.RESET}")
+            log_time("Status check", endpoint_start)
+            print(f"{'='*80}\n")
+            
+            # Determine which step is in progress
+            if expects_ba and not has_ba:
+                message = "COLMAP conversion complete, bundle adjustment in progress"
+            elif expects_splat and not has_gsplat:
+                message = "COLMAP conversion complete, gaussian splatting in progress"
+            else:
+                message = "Pipeline in progress"
+            
+            return {
                 "status": "processing",
                 "scene_id": id,
-                "message": "Initial conversion complete, bundle adjustment in progress"
+                "pipeline_config": pipeline_config,
+                "message": message,
+                "completed_steps": {
+                    "colmap_conversion": has_initial,
+                    "bundle_adjustment": has_ba,
+                    "gaussian_splatting": has_gsplat
+                }
             }
         
         else:
-            print(f"{Colors.YELLOW}⏳ COLMAP BA not started or failed for scene {id}{Colors.RESET}")
+            print(f"{Colors.YELLOW}⏳ COLMAP pipeline not started for scene {id}{Colors.RESET}")
             log_time("Status check", endpoint_start)
             print(f"{'='*80}\n")
             
             return {
                 "status": "not_started",
                 "scene_id": id,
-                "message": "COLMAP bundle adjustment not started or failed"
+                "message": "COLMAP pipeline not started or failed"
             }
 
     return web_app

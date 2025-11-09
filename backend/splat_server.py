@@ -279,11 +279,20 @@ def fastapi_app():
             print(f"{Colors.MAGENTA}   COLMAP dir: {sparse_initial_dir}{Colors.RESET}")
             print(f"{Colors.MAGENTA}   Output dir: {gsplat_dir}{Colors.RESET}")
             
-            # Validate inputs
-            if not sparse_initial_dir.exists():
+            # Auto-detect which sparse directory to use
+            # Prefer sparse_ba (bundle-adjusted) if it exists, otherwise use sparse_initial
+            sparse_ba_dir = scene_path / "colmap" / "sparse_ba"
+            
+            if sparse_ba_dir.exists():
+                source_sparse_dir = sparse_ba_dir
+                print(f"{Colors.CYAN}✓ Using BA-refined reconstruction: {sparse_ba_dir}{Colors.RESET}")
+            elif sparse_initial_dir.exists():
+                source_sparse_dir = sparse_initial_dir
+                print(f"{Colors.CYAN}✓ Using initial reconstruction: {sparse_initial_dir}{Colors.RESET}")
+            else:
                 raise FileNotFoundError(
-                    f"COLMAP reconstruction not found at {sparse_initial_dir}. "
-                    f"Run COLMAP conversion first."
+                    f"No COLMAP reconstruction found. "
+                    f"Checked: {sparse_ba_dir} and {sparse_initial_dir}"
                 )
             
             if not images_dir.exists() or not any(images_dir.iterdir()):
@@ -293,7 +302,7 @@ def fastapi_app():
             print(f"\n{Colors.CYAN}Inspecting COLMAP reconstruction...{Colors.RESET}")
             try:
                 import pycolmap
-                recon = pycolmap.Reconstruction(str(sparse_initial_dir))
+                recon = pycolmap.Reconstruction(str(source_sparse_dir))
                 print(f"  Cameras: {recon.num_cameras()}")
                 print(f"  Images: {recon.num_images()}")
                 print(f"  Points3D: {recon.num_points3D()}")
@@ -308,7 +317,7 @@ def fastapi_app():
                     print(f"    Image ID {img_id}: '{img.name}' -> camera_id={img.camera_id}")
                 
                 print(f"\n  Files in sparse dir:")
-                for f in sparse_initial_dir.iterdir():
+                for f in source_sparse_dir.iterdir():
                     print(f"    {f.name} ({f.stat().st_size} bytes)")
                     
             except Exception as e:
@@ -318,9 +327,9 @@ def fastapi_app():
             
             # Prepare data directory structure for gsplat
             # gsplat expects: data_dir/images/ and data_dir/sparse/0/
-            # We have: scene_path/images/ and scene_path/colmap/sparse_initial/
+            # We have: scene_path/images/ and scene_path/colmap/sparse_(initial|ba)/
             
-            # Create sparse/0 symlink pointing to sparse_initial
+            # Create sparse/0 symlink pointing to source_sparse_dir
             sparse_dir = scene_path / "sparse"
             sparse_0_dir = sparse_dir / "0"
             
@@ -335,8 +344,8 @@ def fastapi_app():
                     shutil.rmtree(sparse_0_dir)
             
             # Create symlink
-            sparse_0_dir.symlink_to(sparse_initial_dir.resolve(), target_is_directory=True)
-            print(f"{Colors.GREEN}✅ Created symlink: {sparse_0_dir} → {sparse_initial_dir}{Colors.RESET}")
+            sparse_0_dir.symlink_to(source_sparse_dir.resolve(), target_is_directory=True)
+            print(f"{Colors.GREEN}✅ Created symlink: {sparse_0_dir} → {source_sparse_dir}{Colors.RESET}")
             
             # Save configuration
             config = {
