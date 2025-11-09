@@ -401,25 +401,31 @@ def fastapi_app():
             # Add camera to reconstruction
             if shared_camera:
                 if img_id == 0:  # Only create one shared camera
+                    # Explicitly set camera ID to 1 for shared camera
+                    camera_id = 1
                     camera = pycolmap.Camera(
                         model='PINHOLE',
                         width=width,
                         height=height,
-                        params=[fx, fy, cx, cy]
+                        params=[fx, fy, cx, cy],
+                        camera_id=camera_id
                     )
-                    camera_id = reconstruction.add_camera(camera)
+                    reconstruction.add_camera(camera)
                     created_camera_ids.append(camera_id)
                     print(f"  Created shared camera ID: {camera_id}")
                     print(f"    Model: PINHOLE, Size: {width}x{height}")
                     print(f"    fx={fx:.2f}, fy={fy:.2f}, cx={cx:.2f}, cy={cy:.2f}")
             else:
+                # Use 1-based camera IDs
+                camera_id = img_id + 1
                 camera = pycolmap.Camera(
                     model='PINHOLE',
                     width=width,
                     height=height,
-                    params=[fx, fy, cx, cy]
+                    params=[fx, fy, cx, cy],
+                    camera_id=camera_id
                 )
-                camera_id = reconstruction.add_camera(camera)
+                reconstruction.add_camera(camera)
                 created_camera_ids.append(camera_id)
                 print(f"  Created camera {img_id} with ID: {camera_id}")
         
