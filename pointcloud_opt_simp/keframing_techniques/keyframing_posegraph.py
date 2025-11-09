@@ -199,7 +199,7 @@ def find_keyframes(imgs):
     return [imgs[i] for i in selected]
 
 if __name__ == "__main__":
-    dir = "data/images_preprocessed/"
+    dir = "../data/images_preprocessed/"
     imgs = []
     for img_path in sorted(os.listdir(dir)):
         img = cv2.imread(dir+img_path)
