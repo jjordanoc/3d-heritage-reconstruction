@@ -28,7 +28,7 @@ import * as THREE from 'three'
 import { ArcballControls } from 'three/examples/jsm/controls/ArcballControls.js'
 import { SplatMesh } from '@sparkjsdev/spark'
 
-const API_BASE = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/+$/, '')
+const API_BASE = (import.meta.env.VITE_SPLAT_API_BASE_URL || '').replace(/\/+$/, '')
 
 export default {
   name: 'GSplatViewer',
@@ -258,8 +258,21 @@ export default {
       
       console.log('[GSplatViewer] Loading gsplat from:', url)
 
-      // Create SplatMesh with URL
-      const splatMesh = new SplatMesh({ url })
+      // Fetch the .ply file ourselves to avoid 431 error with Spark's internal fetch
+      const response = await fetch(url)
+      if (!response.ok) {
+        throw new Error(`Failed to fetch gsplat model: ${response.status} ${response.statusText}`)
+      }
+      
+      const blob = await response.blob()
+      console.log('[GSplatViewer] Fetched blob:', blob.size, 'bytes')
+      
+      // Create a blob URL
+      const blobUrl = URL.createObjectURL(blob)
+      console.log('[GSplatViewer] Created blob URL:', blobUrl)
+      
+      // Create SplatMesh with blob URL
+      const splatMesh = new SplatMesh({ url: blobUrl })
       
       // Wait for splat to load
       await new Promise((resolve, reject) => {
@@ -279,6 +292,9 @@ export default {
       })
 
       console.log('[GSplatViewer] Splat loaded successfully')
+      
+      // Clean up blob URL after loading
+      URL.revokeObjectURL(blobUrl)
 
       // Calculate bounding box from splat
       splatMesh.geometry.computeBoundingBox()
