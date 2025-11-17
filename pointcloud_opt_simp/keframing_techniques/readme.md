@@ -8,7 +8,7 @@ Finally we attempted an ad-hoc method wich instead of relying on hand crafted fe
 Thirdly, as a benchmark we evaluated a random choice from the dataset wich should serve as a benchmark.
 For each of the keyframe selection methods we select from a dataset of N images log(N) keyframes. We then compare the pointclouds resulting from using PI3 on this dataset using chamfer's distance and show the results in table:
 
-Random - 0.0019496411033363273
-MCNF - 0.002566248385559148
+Random -   0.0019496411033363273
+MCNF -     0.002566248385559148
 Saliency - 0.033318889272846555
-Resnet - 0.0010482053260287667
+Resnet -   0.0010482053260287667
