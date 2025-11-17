@@ -142,6 +142,6 @@ def runall(img_path,results_path):
 
 @app.local_entrypoint()
 def main():
-    #runall("./data/sample_i", "./data/predictions/sample1_results.pt")
-    runall("./data/sample_ip1","./data/predictions/sample2_results.pt")
+    runall("./data/clean_data", "./data/predictions/clean_results.pt")
+    #runall("./data/sample_ip1","./data/predictions/sample2_results.pt")
     #runall("./data/sample3","./data/predictions/sample3_results.pt")

@@ -5,6 +5,7 @@ import numpy as np
 import collections
 import networkx as nx
 import matplotlib.pyplot as plt
+import math
 from ortools.graph.python import min_cost_flow
 
 from matplotlib.offsetbox import OffsetImage, AnnotationBbox
@@ -195,19 +196,19 @@ def select_keyframes_mcnf(sfm_graph: dict, total_flow: int) -> (set, set):
 
 def find_keyframes(imgs):
     graph = build_similarity_graph(imgs)
-    selected, _ = select_keyframes_mcnf(graph,5)
+    print(f"Find keyframes with flow {math.ceil(5*math.log(len(imgs)))}")
+    selected, _ = select_keyframes_mcnf(graph,math.ceil(math.log(len(imgs))))
     return [imgs[i] for i in selected]
 
 if __name__ == "__main__":
-    dir = "../data/images_preprocessed/"
+    dir = "../data/clean_data/"
     imgs = []
     for img_path in sorted(os.listdir(dir)):
         img = cv2.imread(dir+img_path)
         imgs.append(img)
-    
+    print("finding keyframes...")
     imgs = find_keyframes(imgs)
-    print(len(imgs))
+    print(f"{len(imgs)} keyframes found")
 
-    for i in imgs:
-        cv2.imshow("",i)
-        cv2.waitKey()
+    for it,i in enumerate(imgs):
+        cv2.imwrite(f"../data/keyframes/mcnf/img_{it}.png",i)

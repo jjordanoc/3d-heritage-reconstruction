@@ -50,7 +50,7 @@ def make_pointclouds(model_output,threshold=0.3):
 
 
 if __name__ == "__main__":
-    who = "sample2_results"
+    who = "clean_results"
     who = who.split(".")[0]
     model_preds = torch.load(f"./data/predictions/{who}.pt")
     os.mkdir(f"./data/pointclouds/{who}")

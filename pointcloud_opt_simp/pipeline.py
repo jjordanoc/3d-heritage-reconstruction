@@ -132,7 +132,7 @@ def tensor_to_pointcloud(model_output,threshold=0.3):
         campos.append(cameras[i].numpy())
     return (pcds,campos)
 
-def run_pipeline(images,last_ply):
+def run_pipeline(images,last_ply=None):
     """
     Arguments:
     Images: PIL.Image list of images to run inference on
@@ -179,6 +179,7 @@ def read_images(path:str,new_id:str,PIXEL_LIMIT=255000) -> list[Image.Image]:
     else:
         raise Exception("new_id no existe en el directorio especificado")
     shape = 500
+    print(filenames) # to match cameras
     for i in range(0, len(filenames)):
         img_path = os.path.join(path, filenames[i])
         try:
@@ -252,7 +253,14 @@ def addImageToCollection(inPath,oldPly,new_id,outputs_directory = "./data/pointc
 
 
 def main():
-    addImageToCollection("./data/sample_ip1/","./data/pointclouds/pipeline_results1/latest.ply","0078")
+    experiment = "resnet"
+
+    images = read_images(f"./data/keyframes/{experiment}","0004.png")
+    register_to = open3d.io.read_point_cloud("./data/pointclouds/keyframes_full/full.ply")
+    full,per_view,cameras = run_pipeline(images,register_to)
+    for idx,i in enumerate(cameras):
+        numpy.save(f"./data/pointclouds/keyframes_{experiment}/cam_{idx}.npy",i)
+    open3d.io.write_point_cloud(f"./data/pointclouds/keyframes_{experiment}/full.ply",full)
 
 if __name__ == "__main__":
     main()
