@@ -18,5 +18,5 @@ def chamfers(to_compare,ground_truth):
     return m1 + m2
 
     
-a = chamfers("./data/pointclouds/keyframes_saliency/full.ply","./data/pointclouds/keyframes_full/full.ply")
+a = chamfers("./data/pointclouds/keyframes_resnet_pq_snmrtin/full.ply","./data/pointclouds/keyframes_full_pq_snmrtin/full.ply")
 print(a)

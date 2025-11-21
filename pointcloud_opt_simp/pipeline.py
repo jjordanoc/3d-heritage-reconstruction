@@ -253,10 +253,11 @@ def addImageToCollection(inPath,oldPly,new_id,outputs_directory = "./data/pointc
 
 
 def main():
-    experiment = "resnet"
+    experiment = "saliency_pq_snmrtin"
 
-    images = read_images(f"./data/keyframes/{experiment}","0004.png")
-    register_to = open3d.io.read_point_cloud("./data/pointclouds/keyframes_full/full.ply")
+    images = read_images(f"./data/keyframes/{experiment}","0000")
+    print("All images have been read and resized")
+    register_to = open3d.io.read_point_cloud("./data/pointclouds/keyframes_full_pq_snmrtin/full.ply")
     full,per_view,cameras = run_pipeline(images,register_to)
     for idx,i in enumerate(cameras):
         numpy.save(f"./data/pointclouds/keyframes_{experiment}/cam_{idx}.npy",i)

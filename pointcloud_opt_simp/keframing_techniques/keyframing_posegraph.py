@@ -194,21 +194,95 @@ def select_keyframes_mcnf(sfm_graph: dict, total_flow: int) -> (set, set):
         
     return selected_images, selected_pairs
 
-def find_keyframes(imgs):
+def find_keyframes(imgs,flow):
     graph = build_similarity_graph(imgs)
-    print(f"Find keyframes with flow {math.ceil(5*math.log(len(imgs)))}")
-    selected, _ = select_keyframes_mcnf(graph,math.ceil(math.log(len(imgs))))
+    print(f"Find keyframes with flow {flow}")
+    selected, _ = select_keyframes_mcnf(graph,flow)
     return [imgs[i] for i in selected]
 
-if __name__ == "__main__":
-    dir = "../data/clean_data/"
-    imgs = []
-    for img_path in sorted(os.listdir(dir)):
-        img = cv2.imread(dir+img_path)
-        imgs.append(img)
-    print("finding keyframes...")
-    imgs = find_keyframes(imgs)
-    print(f"{len(imgs)} keyframes found")
+def search_flow_for_target(imgs, target_kf):
+    low, high = 1, len(imgs)
+    
+    best_imgs = None
+    best_diff = float("inf")
+    best_flow = None
 
-    for it,i in enumerate(imgs):
-        cv2.imwrite(f"../data/keyframes/mcnf/img_{it}.png",i)
+    while low <= high:
+        flow = (low + high) // 2
+        kf = find_keyframes(imgs, flow)
+        count = len(kf)
+        diff = abs(count - target_kf)
+
+        print(f"[search] flow={flow}  →  {count} keyframes")
+
+        # Update best match
+        if diff < best_diff:
+            best_diff = diff
+            best_imgs = kf
+            best_flow = flow
+
+        if count > target_kf:
+            high = flow - 1
+        elif count < target_kf:
+            low = flow + 1
+        else:
+            # perfect match
+            break
+
+    print(f"Best flow = {best_flow} → {len(best_imgs)} keyframes (target={target_kf})")
+    return best_imgs
+
+def find_keyframes_with_graph(graph, flow):
+    """Use precomputed graph to select keyframes for a given flow."""
+    print(f"Find keyframes with flow {flow}")
+    selected, _ = select_keyframes_mcnf(graph, flow)
+    return selected
+
+def search_flow_for_target_with_graph(graph, imgs, target_kf):
+    """Binary search for best flow while reusing the graph."""
+    low, high = 1, len(imgs)
+    best_selected = None
+    best_diff = float("inf")
+    best_flow = None
+
+    while low <= high:
+        flow = (low + high) // 2
+        selected = find_keyframes_with_graph(graph, flow)
+        count = len(selected)
+        diff = abs(count - target_kf)
+
+        print(f"[search] flow={flow} → {count} keyframes")
+
+        # update best match
+        if diff < best_diff:
+            best_diff = diff
+            best_selected = selected
+            best_flow = flow
+
+        if count > target_kf:
+            high = flow - 1
+        elif count < target_kf:
+            low = flow + 1
+        else:
+            break  # perfect match
+
+    print(f"Best flow = {best_flow} → {len(best_selected)} keyframes (target={target_kf})")
+    return [imgs[i] for i in best_selected]
+
+
+if __name__ == "__main__":
+    dir = "./data/pq_snmrtin/"
+    imgs = [cv2.imread(dir + p) for p in sorted(os.listdir(dir))]
+
+    print("Building similarity graph once...")
+    graph = build_similarity_graph(imgs)  # compute SIFT + matches only once
+
+    print("Finding keyframes targeting EXACTLY 19...")
+    keyframes = search_flow_for_target_with_graph(graph, imgs, target_kf=19)
+    print(f"{len(keyframes)} keyframes returned")
+
+    outdir = "./data/keyframes/mcnf_pq_snmrtin/"
+    os.makedirs(outdir, exist_ok=True)
+
+    for i, img in enumerate(keyframes):
+        cv2.imwrite(f"{outdir}/img_{i}.png", img)

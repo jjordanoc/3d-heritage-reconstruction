@@ -10,4 +10,4 @@ def find_keyframes(imgs_folder,dst_folder):
     for i in selection:
         shutil.copy2(imgs_folder + i,dst_folder+i)
 
-find_keyframes("./data/clean_data/","./data/keyframes/random/")
+find_keyframes("./data/pq_snmrtin/","./data/keyframes/random_pq_snmrtin/")

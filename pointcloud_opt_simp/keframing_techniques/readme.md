@@ -1,14 +1,52 @@
-Due to the lack of good metrics for keyframe selection, we are forced to use an indirect method of assesment for the quality of our keyframe selection strategies [Keyframe Selection for Visual Localization and Mapping
-Tasks: A Systematic Literature Review]. The proposed method for evaluation consists in the execution of the model over the full dataset and the selected keyframes, and the score is given as a point cloud similarity metric between this two. The intention is to capture how well the keyframing preserved structure information that the model was then able to retrieve. The key assumption underpinning this methodology is that the model can extract at least all the information from the best possible selection of keyframes using the entire dataset and hence a run using the full dataset is a good proxy for ground truth.
-However, due to the limitations of the model in regards to scale, rotation and displacement, a previous preprocessing of the generated pointclouds is needed. This process is liable to introduce some error to the measurements, and as so this metric is flawed. Nevertheless, we consider it to be sufficient to compare methods as all methods are equally subject to the same source of error.
-We made three experiments evaluating a specific method for keyframe selection. The experiments consisted of a run of the keyframe selection algorithm over the entire clean dataset of size N = 71, selecting ceil(5log(N)) = 31 images as keyframes with each method. Then, a full inference was run on the resulting keyframes wich returns a pointcloud that was registered with a reference pointcloud resulting of inference over the full dataset. Finally, the registered pointcloud's chamfer's distance is reported.
-We tested the the MCNF method described in [A Unified View-Graph Selection Framework for Structure from Motion] wich finds the subset of keyframes by first building a view graph, and then finding the subgraph that keeps the pairs which maximise the feature matches. As this method selects edges in the view graph and not images, we had to experimentally tweak the min-flow parameter to log(N) to produce a selection of appropiate size. Notably the execution time of this method is high due to the need to build the computationally expensive view graph.
-As a second option we evaluated the method described by [Real-Time Visual SLAM for Autonomous Underwater Hull Inspection using Visual Saliency], wich selects keyframes based on saliency. It finds and scores features in the image and on the global dataset to compute a measure of how unexpected the image is for the dataset. An interesting property of the method is that it is online, wich yields itself to our purposes particularly well.
-Finally we attempted an ad-hoc method wich instead of relying on hand crafted features such as SIFT or ORB directly uses Resnet50 embeddings from the second-to-last layer to construct a similarity graph reminiscent of the MCNF described above. Then, cosine similarity is used as a weight for a fully connected graph. All edges with similarities above a threshold T (for tests T = 0.85) are removed and then edges and their asociated images are popped from the graph in descending weight order until the required number of keyframes is reached. Note that the used weights are the result of training in the ImageNet1k dataset, as is the default for pytorch.
-Thirdly, as a benchmark we evaluated a random choice from the dataset wich should serve as a benchmark.
-For each of the keyframe selection methods we select from a dataset of N images log(N) keyframes. We then compare the pointclouds resulting from using PI3 on this dataset using chamfer's distance and show the results in table:
+### **Evaluation of Keyframe Selection Methods**
 
-Random -   0.0019496411033363273
-MCNF -     0.002566248385559148
-Saliency - 0.033318889272846555
-Resnet -   0.0010482053260287667
+Due to the lack of direct metrics for keyframe selection, we employ an indirect evaluation strategy to assess the quality of different keyframe selection methods. Specifically, we run the model over both the full dataset and the selected keyframes, and quantify the quality of keyframe selection using a point cloud similarity metric between the resulting outputs. This approach aims to capture how well the selected keyframes preserve the structural information that the model can subsequently retrieve.  
+
+The key assumption underlying this methodology is that a full-dataset inference represents the maximal retrievable information. Hence, the point cloud obtained from processing the entire dataset serves as a proxy for ground truth. However, due to model limitations in handling scale, rotation, and translation, a preprocessing step is required to align the point clouds before comparison. This alignment introduces potential measurement errors, rendering the metric imperfect. Nonetheless, we consider it sufficient for comparing methods, as all methods are subject to the same sources of error.  
+
+#### **Datasets**
+
+We evaluated our methods on two datasets:  
+1. **UTEC Auditorium** – consisting of 82 images.  
+2. **San Martin Park Central Plaza** – consisting of 72 images.  
+
+All images were preprocessed such that the major axis was resized to 1024 pixels. Blurry images were discarded. No additional preprocessing was applied. These datasets are representative of our application domain, as they include both indoor and outdoor environments, which are relevant for heritage preservation tasks.  
+
+#### **Evaluation Methodology**
+
+For each keyframe selection method, we select $5 \cdot \log(N)$ keyframes (where $N$ is the number of images in the dataset). The selected keyframes are then used to generate a point cloud using our model (PI3), which is registered with the point cloud obtained from the full dataset. The similarity between the two point clouds is measured using Chamfer distance, which serves as our quantitative metric.  
+
+#### **Keyframe Selection Methods**
+
+1. **MCNF (Maximum Coverage Network Flow)** – as described in [A Unified View-Graph Selection Framework for Structure from Motion]. MCNF constructs a view graph and selects edges to maximize feature matches. Since MCNF selects edges rather than individual images, we performed a binary search to find the flow that produced the closest number of keyframes to that of the other methods. This method is computationally expensive due to the overhead of building the view graph.  
+
+2. **Saliency-Based Selection** – as proposed in [Real-Time Visual SLAM for Autonomous Underwater Hull Inspection using Visual Saliency]. This method computes a saliency score for each image based on local feature distinctiveness and their occurrence across the dataset. Images with high saliency are considered more informative. An advantage of this method is its **online applicability**, which aligns well with our target scenarios.  
+
+3. **ResNet50 Embedding-Based Method** – a custom approach using deep features rather than hand-crafted descriptors. ResNet50 embeddings (from the penultimate layer, pretrained on ImageNet1k) are used to construct a fully connected similarity graph. Cosine similarity is used as the edge weight, and edges with similarity above a threshold \(T = 0.85\) are iteratively removed, along with their associated images, until the desired number of keyframes is reached. This approach mirrors the MCNF selection process but leverages learned image representations.  
+
+4. **Random Selection** – serves as a baseline, where keyframes are chosen randomly from the dataset.  
+
+#### **Experiments**
+
+For each dataset, we evaluated all four selection strategies. Keyframes were chosen according to the methods described above, and the resulting point clouds were compared to the full-dataset point cloud using Chamfer distance. The results are summarized in Table X.  
+
+Note that for the MCNF method the reported quatity of images was 46 and 23 for UTEC and Parque San Martin respectivelly, wich deviates from the 32 and 19 expected by other methods.
+
+#### **Results and Discussion**
+
+The evaluation results, summarized in Table X, indicate that the performance of keyframe selection methods varies across datasets and is not always intuitive. Surprisingly, random selection performs competitively on both datasets, achieving a Chamfer distance of 0.00195 for UTEC Auditorium and 0.00291 for San Martin Park Central Plaza, outperforming the MCNF and saliency-based methods in several cases.  
+
+The ResNet50 embedding-based method achieves the lowest Chamfer distance for the UTEC Auditorium dataset (0.00105), demonstrating its ability to preserve structural information effectively in that environment. However, for the San Martin Park dataset, its performance (0.02142) is worse than random selection, suggesting sensitivity to dataset characteristics or spatial complexity. MCNF performs moderately, with a notable increase in Chamfer distance for the San Martin Park dataset (0.01293), reflecting potential limitations in feature-based view graph selection for this setting. The saliency-based method shows the highest Chamfer distances overall, indicating lower fidelity in point cloud reconstruction despite its online applicability.
+
+**Table X: Chamfer Distance for Different Keyframe Selection Methods**
+
+| Method    | UTEC Auditorium           | San Martin Park Central Plaza |
+|-----------|---------------------------|-------------------------------|
+| Random    | 0.0019496411033363273     | 0.0029135318876540523         |
+| MCNF      | 0.002566248385559148      | 0.012933881093106139          |
+| Saliency  | 0.033318889272846555      | 0.10682974225374323           |
+| ResNet    | 0.0010482053260287667     | 0.02141632002881913           |
+
+Despite these results, we selected the ResNet50 embedding-based method for further use due to its faster evaluation time and higher repeatability than a random approach, and its ability to be improved upon by better training. While MCNF can provide good results, it proved too computationally expensive for online applications, regularly requiring runtimes of over 10 minutes to build the pose graph. Random selection, although competitive in Chamfer distance, does not provide a systematic approach to selecting informative frames and may be less reliable across more complex or larger-scale datasets.
+
+These findings highlight that, while simple methods like random selection can occasionally be competitive, embedding-based approaches offer a favorable balance between performance, consistency, and computational efficiency, making them suitable for practical real-time applications. Furthermore, the weaknesses of the metric are aparent, as the lower scoring matches where reliably those with the poorest registration.

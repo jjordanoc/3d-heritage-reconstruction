@@ -179,11 +179,11 @@ if __name__ == "__main__":
     
     # --- 1. Setup ---
     # <<< CONFIGURE YOUR PATHS HERE >>>
-    SOURCE_FOLDER = "./data/clean_data/"
-    KEYFRAME_FOLDER = "./data/keyframes/keyframes_resnet/"
+    SOURCE_FOLDER = "./data/pq_snmrtin/"
+    KEYFRAME_FOLDER = "./data/keyframes/resnet_pq_snmrtin/"
     
     # <<< CONFIGURE YOUR PARAMETERS HERE >>>
-    NUM_KEYFRAMES = 31
+    NUM_KEYFRAMES = 19
     SIMILARITY_THRESHOLD = 0.85 # T=0.85
 
     # --- 2. Create Output Directory ---

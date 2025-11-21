@@ -294,9 +294,9 @@ class OnlineSaliencyBoW:
         return sorted_images[:top_k]
     
 # --- Setup ---
-SOURCE_FOLDER = "./data/clean_data/"
-KEYFRAME_FOLDER = "./data/keyframes/saliency/"
-NUM_KEYFRAMES = 31
+SOURCE_FOLDER = "./data/pq_snmrtin/"
+KEYFRAME_FOLDER = "./data/keyframes/saliency_pq_snmrtin/"
+NUM_KEYFRAMES = 19
 
 # Create the output folder if it doesn't exist
 os.makedirs(KEYFRAME_FOLDER, exist_ok=True)
