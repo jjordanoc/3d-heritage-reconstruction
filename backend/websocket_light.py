@@ -8,6 +8,7 @@ import os
 import uuid
 import base64
 import json
+import queue  # Import standard queue for Empty exception
 from PIL import Image
 import io
 import torch
@@ -158,7 +159,7 @@ def process_infered_data(inf_data_path, id, conf_thres=50):
 @app.function(
     image=image, 
     volumes={VOL_MOUNT_PATH: volume}, 
-    timeout=1200,
+    timeout=600,
     concurrency_limit=10
 )
 def process_queue():
@@ -171,10 +172,14 @@ def process_queue():
         return
 
     print("Worker started, waiting for tasks...")
+    
+    # Process items until queue is empty for a short duration
+    # This allows the container to stay warm for bursts but scale down when idle
     while True:
         try:
-            # Fetch item (blocking)
-            item = reconstruction_queue.get() 
+            # Fetch item with timeout (e.g., 10 seconds)
+            # If nothing arrives within timeout, assume we can exit (scale to zero)
+            item = reconstruction_queue.get(timeout=10) 
             
             project_id = item["project_id"]
             image_id = item["image_id"]
@@ -221,15 +226,6 @@ def process_queue():
                 shutil.copy2(inference_path, str(standard_predictions_path))
                 
                 # 3. Process Inference Data (create PLY)
-                # We can choose to extract just the last image or process the full cloud.
-                # The original code in modal_server.py does both or either depending on flow.
-                # Here we want to update the "latest.ply" which the frontend reads.
-                # The simpler approach for now is to overwrite latest.ply with the FULL reconstruction 
-                # (or just the new points if we were doing incremental, but user said "forward pass")
-                # Based on user request "run inference in the same way... we're not really using registration pipeline anymore"
-                # We will generate the full cloud from the predictions.
-                
-                # Use process_infered_data to save the full PLY to models/latest.ply
                 result_ply = process_infered_data(str(standard_predictions_path), project_id)
                 
                 # Commit volume changes
@@ -256,6 +252,9 @@ def process_queue():
                     "error": str(e)
                 }
         
+        except queue.Empty:
+            print("Queue empty for timeout duration. Exiting worker.")
+            break
         except Exception as e:
             print(f"Error in worker loop: {e}")
             time.sleep(1)
@@ -293,14 +292,10 @@ class ConnectionManager:
 
 manager = ConnectionManager()
 
-def handle_image_upload_sync(project_id: str, image_bytes: bytes):
+def save_image_to_volume(project_id: str, img: Image.Image):
     """
-    Synchronous helper to handle image processing, saving, and queuing.
+    Helper to save image to volume (Synchronous I/O)
     """
-    # Preprocess (CPU bound)
-    img = preprocess_image(image_bytes)
-    
-    # Save to Volume (I/O bound + Network)
     images_dir = VOL_MOUNT_PATH / "backend_data" / "reconstructions" / project_id / "images"
     images_dir.mkdir(parents=True, exist_ok=True)
     
@@ -309,11 +304,7 @@ def handle_image_upload_sync(project_id: str, image_bytes: bytes):
     save_path = images_dir / image_filename
     
     img.save(save_path, format="PNG")
-    volume.commit() # BLOCKING
-    
-    # Queue (Network bound)
-    reconstruction_queue.put({"project_id": project_id, "image_id": image_uuid}) # BLOCKING
-    
+    volume.commit() # BLOCKING I/O
     return image_uuid
 
 @app.function(
@@ -351,8 +342,8 @@ def fastapi_app():
                 
                 for project_id in active_projects:
                     try:
-                        # Use to_thread to avoid blocking on network call
-                        state = await asyncio.to_thread(reconstruction_state.get, project_id)
+                        # Use .aio to avoid blocking on network call
+                        state = await reconstruction_state.get.aio(project_id)
                     except KeyError:
                         state = None
                     except Exception as e:
@@ -400,12 +391,29 @@ def fastapi_app():
                             # Decode (CPU bound, usually fast enough, but good to offload if large)
                             image_bytes = base64.b64decode(image_data)
                             
-                            # Run blocking operations in a thread
+                            # 1. Preprocess (CPU bound)
+                            # Simple enough to keep in thread or main loop if fast
+                            img = preprocess_image(image_bytes)
+                            
+                            # 2. Save to Volume (Blocking I/O) -> Run in thread
                             image_uuid = await asyncio.to_thread(
-                                handle_image_upload_sync, 
+                                save_image_to_volume, 
                                 project_id, 
-                                image_bytes
+                                img
                             )
+                            
+                            # 3. Queue (Network bound) -> Use .aio
+                            await reconstruction_queue.put.aio({
+                                "project_id": project_id, 
+                                "image_id": image_uuid
+                            })
+                            
+                            # 4. Trigger Worker (Scale from Zero)
+                            # We spawn a worker to ensure the queue gets processed.
+                            # If workers are already running (busy), this might spawn an extra one
+                            # up to concurrency limit, which is fine.
+                            # If a worker is idle, it picks up the task.
+                            process_queue.spawn()
                             
                             await websocket.send_json({
                                 "type": "upload_acknowledged",
