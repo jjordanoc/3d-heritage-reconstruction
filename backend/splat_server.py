@@ -443,6 +443,7 @@ def fastapi_app():
         Returns:
             JSON with job status
         """
+        volume.reload()
         endpoint_start = time.time()
         print(f"\n{'='*80}")
         print(f"{Colors.CYAN}🚀 [POST /scene/{id}/train_gsplat] ENDPOINT CALLED{Colors.RESET}")
@@ -453,9 +454,10 @@ def fastapi_app():
         # Validate prerequisites
         scene_path = Path(vol_mnt_loc) / "backend_data" / "reconstructions" / id
         sparse_initial_dir = scene_path / "colmap" / "sparse_initial"
+        sparse_ba_dir = scene_path / "colmap" / "sparse_ba"
         images_dir = scene_path / "images"
         
-        if not sparse_initial_dir.exists():
+        if not sparse_initial_dir.exists() and not sparse_ba_dir.exists():
             print(f"{Colors.RED}❌ ERROR: COLMAP reconstruction not found at {sparse_initial_dir}{Colors.RESET}")
             raise HTTPException(
                 status_code=404,
