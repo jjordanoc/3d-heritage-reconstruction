@@ -20,6 +20,14 @@
         </div>
       </div>
     </div>
+
+    <!-- Update Bubble -->
+    <transition name="fade">
+      <div v-if="showUpdateBubble" class="update-bubble">
+        <div class="bubble-icon">✨</div>
+        <div class="bubble-text">{{ updateMessage }}</div>
+      </div>
+    </transition>
   </div>
 </template>
 
@@ -111,6 +119,12 @@ export default {
       // Pivot viz
       _pivotMarker: null,
       _pivotAxes: null,
+
+      // WebSocket
+      websocket: null,
+      wsConnected: false,
+      showUpdateBubble: false,
+      updateMessage: '',
     }
   },
 
@@ -261,13 +275,19 @@ export default {
 
     // --- Cargar dato por ID desde la ruta ---
     const id = this.$route?.query?.id ?? this.$route?.params?.id
-    if (id) this.loadById(String(id)).catch(console.error)
+    if (id) {
+      this.loadById(String(id)).catch(console.error)
+      this.initWebSocket(String(id))
+    }
     else console.warn('[PLYViewer] No id in route (query/params).')
 
     // Watch cambios de id
     this.$watch(() => this.$route?.fullPath, () => {
       const newId = this.$route?.query?.id ?? this.$route?.params?.id
-      if (newId) this.loadById(String(newId)).catch(console.error)
+      if (newId) {
+        this.loadById(String(newId)).catch(console.error)
+        this.initWebSocket(String(newId))
+      }
     })
 
     // --- Limpieza ---
@@ -282,6 +302,10 @@ export default {
       this._disposePivotViz()
       orbit.dispose?.()
       renderer.dispose?.()
+      if (this.websocket) {
+        this.websocket.close()
+        this.websocket = null
+      }
       if (container.contains(renderer.domElement)) container.removeChild(renderer.domElement)
     }
   },
@@ -649,6 +673,102 @@ export default {
       this._updatePivotViz()
     },
 
+    async smartReload(id) {
+      console.log('[PLYViewer] Starting smart reload...')
+      const base = API_BASE
+      const url = `${base}/pointcloud/${encodeURIComponent(id)}/latest`
+      
+      try {
+        // 1. Fetch in background (no visual change yet)
+        const res = await fetch(url)
+        if (!res.ok) throw new Error(`HTTP ${res.status}`)
+        
+        const ctype = res.headers.get('content-type') || ''
+        let plyBuffer = null
+        let plyUrl = null
+        
+        // Parse response similar to loadById
+        if (ctype.includes('multipart/form-data')) {
+          const buffer = await res.arrayBuffer()
+          const parsed = parseMultipartResponse(buffer, ctype)
+          if (parsed.pointcloud) plyBuffer = parsed.pointcloud
+        } else if (ctype.includes('application/json')) {
+          const json = await res.json()
+          if (typeof json.pointcloud === 'string') {
+             if (json.pointcloud.startsWith('http') || json.pointcloud.startsWith('/')) plyUrl = json.pointcloud
+             else if (json.pointcloud.startsWith('data:') || /^[A-Za-z0-9+/]+=*$/.test(json.pointcloud)) plyBuffer = base64ToArrayBuffer(json.pointcloud)
+          }
+        } else {
+          plyBuffer = await res.arrayBuffer()
+        }
+
+        // 2. Parse geometry in memory
+        const loader = new PLYLoader()
+        let geometry
+        if (plyUrl) {
+          geometry = await new Promise((resolve, reject) => {
+            loader.load(plyUrl, g => resolve(g), undefined, err => reject(err))
+          })
+        } else if (plyBuffer) {
+          geometry = loader.parse(plyBuffer)
+        } else {
+          throw new Error('No data found')
+        }
+
+        geometry.computeVertexNormals?.()
+        geometry.computeBoundingBox?.()
+
+        // Calculate size for material
+        const bbox = geometry.boundingBox
+        let pointSize = 0.02
+        if (bbox) {
+          const size = bbox.getSize(new THREE.Vector3())
+          const maxDim = Math.max(size.x, size.y, size.z) || 1
+          pointSize = maxDim * 0.005
+        }
+
+        // Create new Object3D
+        let newObject
+        if (geometry.getAttribute && geometry.getAttribute('color')) {
+          const mat = new THREE.PointsMaterial({ size: pointSize, vertexColors: true, sizeAttenuation: true })
+          newObject = new THREE.Points(geometry, mat)
+          newObject.raycast = THREE.Points.prototype.raycast
+        } else {
+          const mat = new THREE.MeshStandardMaterial({ color: 0xaaaaaa, flatShading: false })
+          newObject = new THREE.Mesh(geometry, mat)
+        }
+
+        // 3. Hot Swap (Instant visual update)
+        // Remove old objects
+        this._removeCurrentObject()
+        
+        // Add new object
+        this._scene.add(newObject)
+        this._pickables = [newObject]
+        this._currentObject = newObject
+        
+        // Update bounding boxes
+        this._worldBBox.makeEmpty()
+        if (newObject.geometry?.boundingBox) this._worldBBox.union(newObject.geometry.boundingBox)
+        this._updateClampBBox()
+
+        // Notify UI
+        this.showUpdateNotification("Modelo actualizado")
+        console.log('[PLYViewer] Smart reload complete')
+
+      } catch (e) {
+        console.error('[PLYViewer] Smart reload failed:', e)
+      }
+    },
+
+    showUpdateNotification(msg) {
+      this.updateMessage = msg
+      this.showUpdateBubble = true
+      setTimeout(() => {
+        this.showUpdateBubble = false
+      }, 3000)
+    },
+
     // ===== Helpers (Axes + Grid) =====
     _createHelpers(size = 1) {
       this._axes = new THREE.AxesHelper(size)
@@ -757,6 +877,55 @@ export default {
 
     toggleAxes() { if (this._axes) this._axes.visible = this.showAxes },
     toggleGrid() { if (this._grid) this._grid.visible = this.showGrid },
+
+    // ===== WebSocket Integration =====
+    initWebSocket(projectId) {
+      if (this.websocket) {
+        this.websocket.close()
+        this.websocket = null
+      }
+
+      // Assuming backend is same host but different port/path or configured via env
+      // Construct WebSocket URL. If API_BASE starts with http/https, replace with ws/wss
+      let wsUrl = API_BASE.replace(/^http/, 'ws')
+      // If API_BASE is relative or empty, infer from window.location
+      if (!wsUrl || wsUrl.startsWith('/')) {
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+        const host = window.location.host
+        wsUrl = `${protocol}//${host}${API_BASE}`
+      }
+      
+      // HACK: for local dev with different ports, usually we rely on VITE_API_BASE_URL
+      // If using Modal backend directly, it might be wss://...
+      
+      wsUrl = `${wsUrl}/ws/${projectId}`
+      
+      console.log('[PLYViewer] Connecting WebSocket:', wsUrl)
+      this.websocket = new WebSocket(wsUrl)
+
+      this.websocket.onopen = () => {
+        console.log('[PLYViewer] WebSocket connected')
+        this.wsConnected = true
+      }
+
+      this.websocket.onclose = () => {
+        console.log('[PLYViewer] WebSocket disconnected')
+        this.wsConnected = false
+      }
+
+      this.websocket.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data)
+          if (data.type === 'update' && data.status === 'updated') {
+            console.log('[PLYViewer] Received update notification:', data)
+            // Trigger smart reload
+            this.smartReload(projectId)
+          }
+        } catch (e) {
+          console.error('[PLYViewer] Error parsing WebSocket message:', e)
+        }
+      }
+    },
   },
 }
 </script>
@@ -812,4 +981,44 @@ export default {
 
 .toggles { display: flex; gap: 16px; }
 .coords { margin-top: 6px; opacity: 0.95; font-variant-numeric: tabular-nums; }
+
+/* Update Bubble */
+.update-bubble {
+  position: absolute;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  background: rgba(255, 255, 255, 0.15);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 999px;
+  color: #fff;
+  font-family: system-ui, -apple-system, sans-serif;
+  font-size: 14px;
+  font-weight: 500;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+  pointer-events: none;
+  z-index: 100;
+}
+
+.bubble-icon {
+  font-size: 16px;
+}
+
+/* Vue Transitions */
+.fade-enter-active,
+.fade-leave-active {
+  transition: opacity 0.3s ease, transform 0.3s ease;
+}
+
+.fade-enter-from,
+.fade-leave-to {
+  opacity: 0;
+  transform: translate(-50%, 10px);
+}
 </style>
