@@ -251,8 +251,8 @@ def addImageToCollection(inPath,oldPly,new_id,outputs_directory = "./data/pointc
     return new_path
 
 
-def main():
-    addImageToCollection("./data/sample_ip1/","./data/pointclouds/pipeline_results1/latest.ply","0078")
+# def main():
+#     addImageToCollection("./data/sample_ip1/","./data/pointclouds/pipeline_results1/latest.ply","0078")
 
-if __name__ == "__main__":
-    main()
+# if __name__ == "__main__":
+#     main()

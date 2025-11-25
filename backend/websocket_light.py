@@ -10,9 +10,10 @@ import base64
 import json
 from PIL import Image
 import io
-
-
-
+import torch
+import numpy as np
+import open3d as o3d
+import shutil
 
 # Define constants
 VOL_MOUNT_PATH = Path("/mnt/volume")
@@ -31,7 +32,7 @@ image = modal.Image.debian_slim(python_version="3.10").apt_install(
     "numpy",
     "open3d",
     "requests-toolbelt"
-]).add_local_file("pipeline.py", "/root/pipeline.py")
+])
 
 # Setup Volume
 volume = modal.Volume.from_name(name="ut3c-heritage", create_if_missing=True)
@@ -56,6 +57,103 @@ def preprocess_image(image_bytes: bytes, target_size: int = 512) -> Image.Image:
     img = img.resize((new_width, new_height), Image.Resampling.BICUBIC)
     return img
 
+# Helper to extract last pointcloud from predictions
+def extract_last_image_pointcloud(inf_data_path, id, conf_thres=50):
+    """
+    Extracts the pointcloud and camera pose for the LAST (most recent) image.
+    Returns: tuple (last_pc_ply_path, camera_pose)
+    """
+    print(f"Extracting pointcloud from {inf_data_path}")
+    
+    predictions = torch.load(inf_data_path, map_location="cpu")
+    
+    # Extract camera pose for the last image
+    camera_poses = predictions.get("camera_poses")
+    camera_pose = None
+    if camera_poses is not None:
+        if camera_poses.dim() >= 2:
+            camera_pose = camera_poses[0][-1].numpy().tolist()
+        else:
+            camera_pose = camera_poses[-1].numpy().tolist()
+    
+    # Extract pointcloud data for last image
+    pred_world_points = predictions["points"]
+    pred_world_points_conf = predictions.get("conf", torch.ones_like(predictions["points"]))
+    images = predictions["images"]
+    
+    # Get last image data [batch=0, image=-1]
+    last_points = pred_world_points[0][-1].numpy()  # [H*W, 3]
+    last_conf = pred_world_points_conf[0][-1].numpy()  # [H*W]
+    last_colors = images[0][-1].numpy()  # [H*W, 3]
+    
+    vertices_3d = last_points.reshape(-1, 3)
+    colors_rgb = (last_colors.reshape(-1, 3) * 255).astype(np.uint8)
+    conf = last_conf.reshape(-1)
+    
+    conf_threshold = conf_thres / 100.0
+    mask = (conf >= conf_threshold) & (conf > 1e-5)
+    
+    vertices_3d = vertices_3d[mask]
+    colors_rgb = colors_rgb[mask]
+    
+    if len(vertices_3d) == 0:
+        print("ERROR: No points kept after filtering!")
+        return None, camera_pose
+    
+    # Create Open3D point cloud
+    pcd = o3d.geometry.PointCloud()
+    pcd.points = o3d.utility.Vector3dVector(vertices_3d)
+    pcd.colors = o3d.utility.Vector3dVector(colors_rgb / 255.0)
+    
+    # Save temporary PLY
+    temp_folder = VOL_MOUNT_PATH / "backend_data" / "reconstructions" / str(id) / "models"
+    temp_folder.mkdir(parents=True, exist_ok=True)
+    temp_ply_path = temp_folder / "latest.ply" # Saving as latest.ply directly
+    
+    o3d.io.write_point_cloud(str(temp_ply_path), pcd)
+    print(f"Saved pointcloud to {temp_ply_path}")
+    
+    return str(temp_ply_path), camera_pose
+
+def process_infered_data(inf_data_path, id, conf_thres=50):
+    """
+    Process full reconstruction (all images combined)
+    """
+    print(f"Processing full inference data for {id}")
+    
+    pty_location = str(VOL_MOUNT_PATH) + f"/backend_data/reconstructions/{id}/models/latest.ply"
+    pty_folder = str(VOL_MOUNT_PATH) + f"/backend_data/reconstructions/{id}/models"
+    Path(pty_folder).mkdir(parents=True, exist_ok=True)
+    
+    predictions = torch.load(inf_data_path, weights_only=False, map_location=torch.device('cpu'))
+
+    pred_world_points = predictions["points"].numpy()
+    pred_world_points_conf = predictions.get(
+        "conf",
+        torch.ones_like(predictions["points"])
+    ).numpy()
+    images = predictions["images"].numpy()
+    
+    vertices_3d = pred_world_points.reshape(-1, 3)
+    colors_rgb = (images.reshape(-1, 3) * 255).astype(np.uint8)
+    conf = pred_world_points_conf.reshape(-1)
+    
+    conf_threshold = conf_thres / 100
+    mask = (conf >= conf_threshold) & (conf > 1e-5)
+    
+    vertices_3d = vertices_3d[mask]
+    colors_rgb = colors_rgb[mask]
+
+    # Create Open3D point cloud
+    pcd = o3d.geometry.PointCloud()
+    pcd.points = o3d.utility.Vector3dVector(vertices_3d)
+    pcd.colors = o3d.utility.Vector3dVector(colors_rgb / 255.0)
+
+    # Save as PLY
+    o3d.io.write_point_cloud(pty_location, pcd)
+    print(f"Saved full pointcloud to {pty_location}")
+    return pty_location
+
 # Worker function
 @app.function(
     image=image, 
@@ -64,36 +162,33 @@ def preprocess_image(image_bytes: bytes, target_size: int = 512) -> Image.Image:
     concurrency_limit=10
 )
 def process_queue():
-    # We assume pipeline.py is available in the working directory or installed
+    # Instantiate the model inference class from the other app
     try:
-        import pipeline
-    except ImportError:
-        # Fallback if pipeline is not in path (e.g. strict sandbox)
-        print("WARNING: Could not import pipeline. Ensure pipeline.py is mounted.")
+        Pi3Remote = modal.Cls.from_name("pi3-inference", "ModelInference")
+        inference_obj = Pi3Remote()
+    except Exception as e:
+        print(f"Error connecting to inference model: {e}")
         return
 
     print("Worker started, waiting for tasks...")
     while True:
         try:
             # Fetch item (blocking)
-            # Queue items: {"project_id": str, "image_id": str}
             item = reconstruction_queue.get() 
             
             project_id = item["project_id"]
             image_id = item["image_id"]
             
             # --- LOCK CHECK ---
-            # Check if currently processing using modal.Dict as lock
             try:
                 current_state = reconstruction_state.get(project_id)
             except KeyError:
                 current_state = None
             
             if current_state and current_state.get("status") == "processing":
-                # Project is busy! Put it back and wait a bit.
                 print(f"Project {project_id} is busy. Re-queueing {image_id}")
                 reconstruction_queue.put(item) 
-                time.sleep(1) # Prevent hot loop
+                time.sleep(1)
                 continue
             
             print(f"Processing: Project {project_id}, Image {image_id}")
@@ -109,30 +204,33 @@ def process_queue():
             project_root = VOL_MOUNT_PATH / "backend_data" / "reconstructions" / project_id
             images_folder = project_root / "images"
             outputs_folder = project_root / "models"
-            
-            # Check for existing reconstruction for registration
-            old_ply_path = outputs_folder / "latest" / "full.ply"
-            if not old_ply_path.exists():
-                old_ply_path_str = None
-                print("No existing reconstruction found. Starting fresh.")
-            else:
-                old_ply_path_str = str(old_ply_path)
-                print(f"Found existing reconstruction at {old_ply_path_str}")
+            images_path_relative = f"/backend_data/reconstructions/{project_id}/images" # Path relative to volume root for inference
 
             # Reload volume to ensure we have latest files
             volume.reload()
 
-            # Run pipeline
             try:
-                result_path = pipeline.addImageToCollection(
-                    inPath=str(images_folder),
-                    oldPly=old_ply_path_str,
-                    new_id=image_id,
-                    outputs_directory=str(outputs_folder),
-                    save_all_shards=False 
-                )
+                # 1. Run Inference
+                print(f"Starting remote inference for {project_id}...")
+                inf_res_path = inference_obj.run_inference.remote(images_path_relative)
+                inference_path = str(VOL_MOUNT_PATH) + inf_res_path + "/predictions.pt"
+                print(f"Inference complete. Results at {inference_path}")
+
+                # 2. Save predictions.pt to project folder
+                standard_predictions_path = project_root / "predictions.pt"
+                shutil.copy2(inference_path, str(standard_predictions_path))
                 
-                print(f"Pipeline finished. Result at {result_path}")
+                # 3. Process Inference Data (create PLY)
+                # We can choose to extract just the last image or process the full cloud.
+                # The original code in modal_server.py does both or either depending on flow.
+                # Here we want to update the "latest.ply" which the frontend reads.
+                # The simpler approach for now is to overwrite latest.ply with the FULL reconstruction 
+                # (or just the new points if we were doing incremental, but user said "forward pass")
+                # Based on user request "run inference in the same way... we're not really using registration pipeline anymore"
+                # We will generate the full cloud from the predictions.
+                
+                # Use process_infered_data to save the full PLY to models/latest.ply
+                result_ply = process_infered_data(str(standard_predictions_path), project_id)
                 
                 # Commit volume changes
                 volume.commit()
@@ -198,7 +296,6 @@ manager = ConnectionManager()
 def handle_image_upload_sync(project_id: str, image_bytes: bytes):
     """
     Synchronous helper to handle image processing, saving, and queuing.
-    This isolates blocking I/O and Modal API calls from the async event loop.
     """
     # Preprocess (CPU bound)
     img = preprocess_image(image_bytes)
@@ -335,4 +432,3 @@ def main():
     print("Spawning worker process...")
     process_queue.spawn()
     print("To run the server: modal serve backend/websocket_light.py")
-
