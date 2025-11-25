@@ -60,7 +60,8 @@ def preprocess_image(image_bytes: bytes, target_size: int = 512) -> Image.Image:
 @app.function(
     image=image, 
     volumes={VOL_MOUNT_PATH: volume}, 
-    timeout=1200
+    timeout=1200,
+    concurrency_limit=10
 )
 def process_queue():
     # We assume pipeline.py is available in the working directory or installed
@@ -81,7 +82,28 @@ def process_queue():
             project_id = item["project_id"]
             image_id = item["image_id"]
             
+            # --- LOCK CHECK ---
+            # Check if currently processing using modal.Dict as lock
+            try:
+                current_state = reconstruction_state.get(project_id)
+            except KeyError:
+                current_state = None
+            
+            if current_state and current_state.get("status") == "processing":
+                # Project is busy! Put it back and wait a bit.
+                print(f"Project {project_id} is busy. Re-queueing {image_id}")
+                reconstruction_queue.put(item) 
+                time.sleep(1) # Prevent hot loop
+                continue
+            
             print(f"Processing: Project {project_id}, Image {image_id}")
+            
+            # Acquire Lock
+            reconstruction_state[project_id] = {
+                "latest_image_id": image_id, 
+                "timestamp": time.time(),
+                "status": "processing"
+            }
             
             # Construct paths
             project_root = VOL_MOUNT_PATH / "backend_data" / "reconstructions" / project_id
@@ -115,7 +137,7 @@ def process_queue():
                 # Commit volume changes
                 volume.commit()
                 
-                # Update state
+                # Update state (Unlock)
                 reconstruction_state[project_id] = {
                     "latest_image_id": image_id,
                     "timestamp": time.time(),
@@ -128,6 +150,7 @@ def process_queue():
                 import traceback
                 traceback.print_exc()
                 
+                # Release lock on error
                 reconstruction_state[project_id] = {
                     "latest_image_id": image_id,
                     "timestamp": time.time(),
