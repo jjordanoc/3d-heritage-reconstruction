@@ -11,30 +11,39 @@ import json
 import queue  # Import standard queue for Empty exception
 from PIL import Image
 import io
-import torch
-import numpy as np
-import open3d as o3d
-import shutil
 
 # Define constants
 VOL_MOUNT_PATH = Path("/mnt/volume")
 
 # Setup Modal Image
-image = modal.Image.debian_slim(python_version="3.10").apt_install(
-    "git",
-    "libgl1-mesa-glx",  # Provides libGL.so.1
-    "libglib2.0-0",     # Often needed by Open3D
-).pip_install([
-    "fastapi[standard]",
-    "pillow",
-    "python-multipart",
-    "torch",
-    "torchvision",
-    "numpy",
-    "open3d",
-    "requests-toolbelt"
-])
+# image = modal.Image.debian_slim(python_version="3.10").apt_install(
+#     "git",
+#     "libgl1-mesa-glx",  # Provides libGL.so.1
+#     "libglib2.0-0",     # Often needed by Open3D
+# ).pip_install([
+#     "fastapi[standard]",
+#     "pillow",
+#     "python-multipart",
+#     "torch",
+#     "torchvision",
+#     "numpy",
+#     "open3d",
+#     "requests-toolbelt"
+# ])
 
+image = modal.Image.debian_slim(python_version="3.10").apt_install(
+        "git",  # if you need it
+        "libgl1-mesa-glx",  # Provides libGL.so.1
+        "libglib2.0-0",     # Often needed by Open3D
+    ).pip_install([
+        "fastapi[standard]",
+        "pillow",
+        "python-multipart",
+        "torch",
+        "numpy",
+        "open3d",
+        "requests-toolbelt"
+    ])
 # Setup Volume
 volume = modal.Volume.from_name(name="ut3c-heritage", create_if_missing=True)
 
@@ -64,6 +73,10 @@ def extract_last_image_pointcloud(inf_data_path, id, conf_thres=50):
     Extracts the pointcloud and camera pose for the LAST (most recent) image.
     Returns: tuple (last_pc_ply_path, camera_pose)
     """
+    import torch
+    import numpy as np
+    import open3d as o3d
+    
     print(f"Extracting pointcloud from {inf_data_path}")
     
     predictions = torch.load(inf_data_path, map_location="cpu")
@@ -120,6 +133,10 @@ def process_infered_data(inf_data_path, id, conf_thres=50):
     """
     Process full reconstruction (all images combined)
     """
+    import torch
+    import numpy as np
+    import open3d as o3d
+    
     print(f"Processing full inference data for {id}")
     
     pty_location = str(VOL_MOUNT_PATH) + f"/backend_data/reconstructions/{id}/models/latest.ply"
@@ -163,6 +180,8 @@ def process_infered_data(inf_data_path, id, conf_thres=50):
     concurrency_limit=10
 )
 def process_queue():
+    import shutil
+    
     # Instantiate the model inference class from the other app
     try:
         Pi3Remote = modal.Cls.from_name("pi3-inference", "ModelInference")

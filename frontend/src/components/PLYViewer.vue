@@ -36,7 +36,7 @@ import * as THREE from 'three'
 import { ArcballControls } from 'three/examples/jsm/controls/ArcballControls.js'
 import { PLYLoader } from 'three/examples/jsm/loaders/PLYLoader.js'
 
-const API_BASE = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/+$/, '')
+const API_BASE = (import.meta.env.VITE_WS_API_URL || '').replace(/\/+$/, '')
 
 function base64ToArrayBuffer(b64) {
   const comma = b64.indexOf(',')
