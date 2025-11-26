@@ -136,6 +136,7 @@ async function uploadFile() {
       // reloading.value = true 
       // await viewerRef.value?.reloadPointCloud(id)
       console.log("Upload successful, waiting for WebSocket update...")
+      uploading.value = false
     }
     
     discardFile()

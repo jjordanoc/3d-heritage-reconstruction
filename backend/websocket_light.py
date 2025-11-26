@@ -267,12 +267,33 @@ def process_queue():
             try:
                 # 1. Run Inference
                 print(f"Starting remote inference for {project_id}...")
+                # Verify volume is mounted correctly before inference
+                print(f"DEBUG: Worker VOL_MOUNT_PATH: {VOL_MOUNT_PATH}, Exists: {VOL_MOUNT_PATH.exists()}")
+                if VOL_MOUNT_PATH.exists():
+                    print(f"DEBUG: Volume root contents: {os.listdir(VOL_MOUNT_PATH)}")
+                
                 inf_res_path = inference_obj.run_inference.remote(images_path_relative)
                 inference_path = str(VOL_MOUNT_PATH) + inf_res_path + "/predictions.pt"
                 print(f"Inference complete. Results at {inference_path}")
 
                 # 2. Save predictions.pt to project folder
                 volume.reload()
+                
+                # DEBUG: Check if file exists
+                if not os.path.exists(inference_path):
+                    print(f"DEBUG: File MISSING at {inference_path}")
+                    # List parent dir to see what's there
+                    parent_dir = Path(inference_path).parent.parent
+                    if parent_dir.exists():
+                        print(f"DEBUG: Contents of {parent_dir}: {os.listdir(parent_dir)}")
+                        # Check if we can find the UUID folder
+                        target_uuid = Path(inference_path).parent.name
+                        print(f"DEBUG: Looking for UUID folder: {target_uuid}")
+                    else:
+                        print(f"DEBUG: Parent dir {parent_dir} does not exist!")
+                else:
+                    print(f"DEBUG: File FOUND at {inference_path}")
+                
                 standard_predictions_path = project_root / "predictions.pt"
                 shutil.copy2(inference_path, str(standard_predictions_path))
                 volume.commit()

@@ -113,7 +113,7 @@ class ModelInference:
         predictions['conf'][edge] = 0.0
         del predictions['local_points']
 
-        print("Camera")
+        # print("Camera")
         
         # Much simpler and fast enough
         predictions_path = output_dir / "predictions.pt"

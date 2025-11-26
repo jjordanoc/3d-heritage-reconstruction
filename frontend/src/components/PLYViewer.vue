@@ -36,7 +36,9 @@ import * as THREE from 'three'
 import { ArcballControls } from 'three/examples/jsm/controls/ArcballControls.js'
 import { PLYLoader } from 'three/examples/jsm/loaders/PLYLoader.js'
 
-const API_BASE = (import.meta.env.VITE_WS_API_URL || '').replace(/\/+$/, '')
+const API_BASE = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/+$/, '')
+const WS_API_BASE = (import.meta.env.VITE_WS_API_URL || '').replace(/\/+$/, '')
+
 
 function base64ToArrayBuffer(b64) {
   const comma = b64.indexOf(',')
@@ -887,7 +889,7 @@ export default {
 
       // Assuming backend is same host but different port/path or configured via env
       // Construct WebSocket URL. If API_BASE starts with http/https, replace with ws/wss
-      let wsUrl = API_BASE.replace(/^http/, 'ws')
+      let wsUrl = WS_API_BASE.replace(/^http/, 'ws')
       // If API_BASE is relative or empty, infer from window.location
       if (!wsUrl || wsUrl.startsWith('/')) {
         const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'

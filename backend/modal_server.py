@@ -598,6 +598,7 @@ def fastapi_app():
 
     @web_app.get("/pointcloud/{pc_id}/{tag}")
     async def get_pointcloud(pc_id: str, tag: str):
+        volume.reload()
         endpoint_start = time.time()
         print(f"\n{'='*80}")
         print(f"{Colors.CYAN}📥 [GET /pointcloud/{pc_id}/{tag}] ENDPOINT CALLED{Colors.RESET}")
