@@ -15,8 +15,20 @@ import io
 # Define constants
 VOL_MOUNT_PATH = Path("/mnt/volume")
 
-# Setup Modal Image
-# image = modal.Image.debian_slim(python_version="3.10").apt_install(
+# ANSI Color codes for logging
+class Colors:
+    CYAN = '\033[96m'      # Function entry/exit
+    YELLOW = '\033[93m'    # Timing info
+    RED = '\033[91m'       # Warnings/Errors
+    GREEN = '\033[92m'     # Success
+    MAGENTA = '\033[95m'   # Data info
+    RESET = '\033[0m'      # Reset color
+
+def log_time(label, start_time):
+    """Helper to log elapsed time in yellow without emojis"""
+    elapsed = time.time() - start_time
+    print(f"{Colors.YELLOW}[TIME] [{label}] took {elapsed:.3f}s{Colors.RESET}")
+    return elapsed
 #     "git",
 #     "libgl1-mesa-glx",  # Provides libGL.so.1
 #     "libglib2.0-0",     # Often needed by Open3D
@@ -176,7 +188,7 @@ def process_infered_data(inf_data_path, id, conf_thres=50):
 @app.function(
     image=image, 
     volumes={VOL_MOUNT_PATH: volume}, 
-    timeout=600,
+    timeout=24*60*60, # 24 hours
     max_containers=10
 )
 def process_queue():
@@ -251,9 +263,11 @@ def process_queue():
             except Exception as e:
                 print(f"Timestamp check failed: {e}. Proceeding with inference.")
 
-            print(f"Processing: Project {project_id}, Image {image_id}")
+            print(f"{Colors.CYAN}Processing: Project {project_id}, Image {image_id}{Colors.RESET}")
+            process_start_total = time.time()
             
             # Acquire Lock
+            lock_start = time.time()
             reconstruction_state[project_id] = {
                 "latest_image_id": image_id, 
                 "timestamp": time.time(),
@@ -261,27 +275,33 @@ def process_queue():
                 # Keep old timestamp until finished
                 "last_processed_timestamp": current_state.get("last_processed_timestamp", 0) if current_state else 0
             }
+            log_time("Acquire Lock", lock_start)
             
             images_path_relative = f"/backend_data/reconstructions/{project_id}/images" # Path relative to volume root for inference
 
             try:
                 # 1. Run Inference
-                print(f"Starting remote inference for {project_id}...")
+                print(f"{Colors.CYAN}Starting remote inference for {project_id}...{Colors.RESET}")
                 # Verify volume is mounted correctly before inference
-                print(f"DEBUG: Worker VOL_MOUNT_PATH: {VOL_MOUNT_PATH}, Exists: {VOL_MOUNT_PATH.exists()}")
-                if VOL_MOUNT_PATH.exists():
-                    print(f"DEBUG: Volume root contents: {os.listdir(VOL_MOUNT_PATH)}")
+                # print(f"DEBUG: Worker VOL_MOUNT_PATH: {VOL_MOUNT_PATH}, Exists: {VOL_MOUNT_PATH.exists()}")
+                # if VOL_MOUNT_PATH.exists():
+                #    print(f"DEBUG: Volume root contents: {os.listdir(VOL_MOUNT_PATH)}")
                 
+                inf_start = time.time()
                 inf_res_path = inference_obj.run_inference.remote(images_path_relative)
+                log_time("Remote Inference", inf_start)
+                
                 inference_path = str(VOL_MOUNT_PATH) + inf_res_path + "/predictions.pt"
-                print(f"Inference complete. Results at {inference_path}")
+                print(f"{Colors.GREEN}Inference complete. Results at {inference_path}{Colors.RESET}")
 
                 # 2. Save predictions.pt to project folder
+                vol_sync_start = time.time()
                 volume.reload()
+                log_time("Volume Reload", vol_sync_start)
                 
                 # DEBUG: Check if file exists
                 if not os.path.exists(inference_path):
-                    print(f"DEBUG: File MISSING at {inference_path}")
+                    print(f"{Colors.RED}DEBUG: File MISSING at {inference_path}{Colors.RESET}")
                     # List parent dir to see what's there
                     parent_dir = Path(inference_path).parent.parent
                     if parent_dir.exists():
@@ -294,35 +314,50 @@ def process_queue():
                 else:
                     print(f"DEBUG: File FOUND at {inference_path}")
                 
+                copy_start = time.time()
                 standard_predictions_path = project_root / "predictions.pt"
                 shutil.copy2(inference_path, str(standard_predictions_path))
+                log_time("Copy predictions.pt", copy_start)
+                
+                commit_start = time.time()
                 volume.commit()
+                log_time("Volume Commit (predictions.pt)", commit_start)
                 
                 # 3. Process Inference Data (create PLY)
+                ply_proc_start = time.time()
                 result_ply = process_infered_data(str(standard_predictions_path), project_id)
+                log_time("Process Inferred Data (PLY)", ply_proc_start)
                 
                 # Commit volume changes
+                commit_ply_start = time.time()
                 volume.commit()
+                log_time("Volume Commit (PLY)", commit_ply_start)
                 
                 # Get new mtime AFTER processing/committing?
                 # No, we want the mtime of the INPUT images folder that we just processed.
                 # We already captured it in `folder_mtime` before the run.
                 # Wait, if new images arrived DURING the run, folder_mtime might have increased.
                 # We should re-check the folder mtime now to safely say "we processed up to THIS time".
+                check_mtime_start = time.time()
                 volume.reload()
                 if images_folder.exists():
                     new_folder_mtime = images_folder.stat().st_mtime
                 else:
                     new_folder_mtime = time.time()
+                log_time("Check Final mtime", check_mtime_start)
 
                 # Update state (Unlock)
+                unlock_start = time.time()
                 reconstruction_state[project_id] = {
                     "latest_image_id": image_id,
                     "timestamp": time.time(),
                     "status": "updated",
                     "last_processed_timestamp": new_folder_mtime
                 }
-                print(f"State updated for {project_id}")
+                log_time("Unlock State", unlock_start)
+                
+                print(f"{Colors.GREEN}State updated for {project_id}{Colors.RESET}")
+                log_time("Total Process Queue Item", process_start_total)
                 
             except Exception as e:
                 print(f"Error in pipeline execution: {e}")
@@ -395,7 +430,8 @@ def save_image_to_volume(project_id: str, img: Image.Image):
 @app.function(
     image=image, 
     volumes={VOL_MOUNT_PATH: volume}, 
-    allow_concurrent_inputs=100,
+    max_containers=100,
+    timeout=24*60*60 # 24 hours
 )
 @modal.asgi_app()
 def fastapi_app():
@@ -421,6 +457,7 @@ def fastapi_app():
         last_timestamps = {}
         print("State monitor running")
         while True:
+            # loop_start = time.time() # Too verbose for polling loop
             try:
                 # Iterate active projects
                 active_projects = list(manager.active_connections.keys())
@@ -428,7 +465,9 @@ def fastapi_app():
                 for project_id in active_projects:
                     try:
                         # Use .aio to avoid blocking on network call
+                        # fetch_start = time.time()
                         state = await reconstruction_state.get.aio(project_id)
+                        # log_time("Fetch State", fetch_start)
                     except KeyError:
                         state = None
                     except Exception as e:
@@ -440,7 +479,7 @@ def fastapi_app():
                         last_ts = last_timestamps.get(project_id, 0)
                         
                         if ts > last_ts:
-                            print(f"Detected update for {project_id}: {state}")
+                            print(f"{Colors.GREEN}Detected update for {project_id}: {state}{Colors.RESET}")
                             last_timestamps[project_id] = ts
                             
                             msg = {
@@ -452,7 +491,9 @@ def fastapi_app():
                             if state.get("status") == "error":
                                 msg["error"] = state.get("error")
                                 
+                            broadcast_start = time.time()
                             await manager.broadcast(project_id, msg)
+                            log_time("Broadcast Update", broadcast_start)
             except Exception as e:
                 print(f"Error in monitor_state: {e}")
             

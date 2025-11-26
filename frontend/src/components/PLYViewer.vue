@@ -35,6 +35,8 @@
 import * as THREE from 'three'
 import { ArcballControls } from 'three/examples/jsm/controls/ArcballControls.js'
 import { PLYLoader } from 'three/examples/jsm/loaders/PLYLoader.js'
+import { useWebSocket } from '@vueuse/core'
+import { watch } from 'vue'
 
 const API_BASE = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/+$/, '')
 const WS_API_BASE = (import.meta.env.VITE_WS_API_URL || '').replace(/\/+$/, '')
@@ -123,10 +125,11 @@ export default {
       _pivotAxes: null,
 
       // WebSocket
-      websocket: null,
+      // websocket: null, // Removed manual websocket
       wsConnected: false,
       showUpdateBubble: false,
       updateMessage: '',
+      wsHandle: null, // Store the return from useWebSocket
     }
   },
 
@@ -304,10 +307,13 @@ export default {
       this._disposePivotViz()
       orbit.dispose?.()
       renderer.dispose?.()
-      if (this.websocket) {
-        this.websocket.close()
-        this.websocket = null
+      
+      // Clean up useWebSocket
+      if (this.wsHandle) {
+        this.wsHandle.close()
+        this.wsHandle = null
       }
+      
       if (container.contains(renderer.domElement)) container.removeChild(renderer.domElement)
     }
   },
@@ -880,53 +886,76 @@ export default {
     toggleAxes() { if (this._axes) this._axes.visible = this.showAxes },
     toggleGrid() { if (this._grid) this._grid.visible = this.showGrid },
 
-    // ===== WebSocket Integration =====
+    // ===== WebSocket Integration (using @vueuse/core) =====
     initWebSocket(projectId) {
-      if (this.websocket) {
-        this.websocket.close()
-        this.websocket = null
+      if (this.wsHandle) {
+        this.wsHandle.close()
+        this.wsHandle = null
       }
 
-      // Assuming backend is same host but different port/path or configured via env
-      // Construct WebSocket URL. If API_BASE starts with http/https, replace with ws/wss
       let wsUrl = WS_API_BASE.replace(/^http/, 'ws')
-      // If API_BASE is relative or empty, infer from window.location
       if (!wsUrl || wsUrl.startsWith('/')) {
         const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
         const host = window.location.host
         wsUrl = `${protocol}//${host}${API_BASE}`
       }
       
-      // HACK: for local dev with different ports, usually we rely on VITE_API_BASE_URL
-      // If using Modal backend directly, it might be wss://...
-      
       wsUrl = `${wsUrl}/ws/${projectId}`
       
       console.log('[PLYViewer] Connecting WebSocket:', wsUrl)
-      this.websocket = new WebSocket(wsUrl)
+      
+      // Initialize useWebSocket
+      const { status, data, send, close, open } = useWebSocket(wsUrl, {
+        autoReconnect: {
+          retries: -1, // Infinite retries
+          delay: 1000,
+          onFailed() {
+            console.log('[PLYViewer] Failed to connect WebSocket after retries')
+          },
+        },
+        heartbeat: {
+          message: JSON.stringify({ type: 'ping' }),
+          interval: 30000, // 30 seconds
+          pongTimeout: 10000,
+        },
+        onConnected: (ws) => {
+          console.log('[PLYViewer] WebSocket connected')
+          this.wsConnected = true
+        },
+        onDisconnected: (ws, event) => {
+          console.log('[PLYViewer] WebSocket disconnected')
+          this.wsConnected = false
+        },
+        onError: (ws, event) => {
+          console.error('[PLYViewer] WebSocket error:', event)
+        },
+      })
 
-      this.websocket.onopen = () => {
-        console.log('[PLYViewer] WebSocket connected')
-        this.wsConnected = true
-      }
-
-      this.websocket.onclose = () => {
-        console.log('[PLYViewer] WebSocket disconnected')
-        this.wsConnected = false
-      }
-
-      this.websocket.onmessage = (event) => {
+      // Watch for data changes
+      watch(data, (newData) => {
+        if (!newData) return
         try {
-          const data = JSON.parse(event.data)
-          if (data.type === 'update' && data.status === 'updated') {
-            console.log('[PLYViewer] Received update notification:', data)
+          const msg = JSON.parse(newData)
+          // Handle pong if needed, but heartbeat handles it mostly
+          if (msg.type === 'pong') return
+
+          if (msg.type === 'update' && msg.status === 'updated') {
+            const receivedTime = Date.now() / 1000
+            console.log(`[PLYViewer] Received update notification at ${receivedTime.toFixed(3)}:`, msg)
+            if (msg.timestamp) {
+               const latency = receivedTime - msg.timestamp
+               console.log(`[PLYViewer] Notification Latency: ${latency.toFixed(3)}s`)
+            }
             // Trigger smart reload
             this.smartReload(projectId)
           }
         } catch (e) {
           console.error('[PLYViewer] Error parsing WebSocket message:', e)
         }
-      }
+      })
+
+      // Store handle to close later
+      this.wsHandle = { close, open, send, status, data }
     },
   },
 }
