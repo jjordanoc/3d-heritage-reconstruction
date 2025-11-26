@@ -37,6 +37,7 @@ image = modal.Image.debian_slim(python_version="3.10").apt_install(
     ])
 
 volume = modal.Volume.from_name(name="ut3c-heritage", create_if_missing=True)
+reconstruction_queue = modal.Queue.from_name("reconstruction-queue", create_if_missing=True)
 
 
 #application stuff
@@ -556,77 +557,40 @@ def fastapi_app():
         log_time("STEP 1: Upload Image", step1_start)
         print(f"{Colors.GREEN}✅ Image uploaded successfully to {uploaded}{Colors.RESET}\n")
         
-        # STEP 2: Run inference
-        step2_start = time.time()
-        inference_path = await run_inference(id)
-        log_time("STEP 2: Run Inference", step2_start)
-        print(f"{Colors.GREEN}✅ Inference results at {inference_path}{Colors.RESET}\n")
-        
-        # STEP 3: Save predictions and prepare volume
-        step3_start = time.time()
-        standard_predictions_path = Path(vol_mnt_loc) / "backend_data" / "reconstructions" / id / "predictions.pt"
-        standard_predictions_path.parent.mkdir(parents=True, exist_ok=True)
-
-        # refresh volume with latest changes
-        vol_reload_start = time.time()
-        volume.reload()
-        log_time("Volume reload", vol_reload_start)
-
-        import shutil
-        copy_start = time.time()
-        shutil.copy2(inference_path, str(standard_predictions_path)) # race condition!!!!
-        log_time("Copy predictions.pt", copy_start)
-        print(f"{Colors.GREEN}✅ Saved predictions to {standard_predictions_path}{Colors.RESET}")
-        log_time("STEP 3: Save Predictions", step3_start)
-
-        # STEP 4: Extract last image's pointcloud and camera pose for immediate response
-        step4_start = time.time()
-        temp_ply_path, camera_pose = extract_last_image_pointcloud(str(inference_path), id) # race condition!!!!
-        log_time("STEP 4: Extract Last Image PLY", step4_start)
-        
-        if temp_ply_path is None:
-            print(f"{Colors.RED}❌ ERROR: Failed to extract pointcloud from last image{Colors.RESET}")
-            raise HTTPException(status_code=500, detail="Failed to extract pointcloud from last image")
-        
-        # STEP 5: Schedule full reconstruction in the background (non-blocking)
-        # step5_start = time.time()
-        # if background_tasks:
-        #     background_tasks.add_task(process_infered_data, str(inference_path), id, 0)
-        #     background_tasks.add_task(process_infered_data_per_image, str(inference_path), id, 0)
-        #     print(f"{Colors.CYAN}🔄 Scheduled background tasks for full reconstruction{Colors.RESET}")
-        # else:
-        #     print(f"{Colors.RED}⚠️  WARNING: No background_tasks available, skipping background processing{Colors.RESET}")
-        # log_time("STEP 5: Schedule Background Tasks", step5_start)
-        
-        # STEP 6: Read PLY and prepare response
-        # step6_start = time.time()
-        # read_start = time.time()
-        # with open(temp_ply_path, 'rb') as f:
-        #     ply_data = f.read()
-        # ply_size = len(ply_data)
-        # print(f"{Colors.MAGENTA}   Read PLY file: {ply_size / 1024:.2f} KB{Colors.RESET}")
-        # log_time("Read PLY file", read_start)
-        
-        # # Build multipart response with pointcloud and camera pose
-        # encode_start = time.time()
-        # multipart_data = MultipartEncoder(
-        #     fields={
-        #         'pointcloud': (f"{id}_latest.ply", ply_data, 'application/octet-stream'),
-        #         'camera_pose': json.dumps(camera_pose) if camera_pose is not None else json.dumps(None)
-        #     }
-        # )
-        # log_time("Encode multipart response", encode_start)
-        # log_time("STEP 6: Prepare Response", step6_start)
-
-        # process inferred data 
-        await run_in_threadpool(process_infered_data, str(inference_path), id, 0)
+        # STEP 2: Push to Queue
+        queue_start = time.time()
+        try:
+           
+            
+            # Use UUID for image_id (filename without extension)
+            image_id = Path(uploaded).stem
+            
+            task = {"project_id": id, "image_id": image_id}
+            reconstruction_queue.put(task)
+            print(f"{Colors.GREEN}✅ Pushed task to queue: {task}{Colors.RESET}")
+            
+            # Trigger worker
+            try:
+                worker = modal.Function.from_name("websocket-light", "process_queue")
+                worker.spawn()
+                print(f"{Colors.GREEN}✅ Triggered worker spawn{Colors.RESET}")
+            except Exception as e:
+                print(f"{Colors.RED}⚠️  WARNING: Could not spawn worker: {e}{Colors.RESET}")
+                
+        except Exception as e:
+            print(f"{Colors.RED}❌ ERROR: Failed to queue task: {e}{Colors.RESET}")
+            # We don't raise here to allow the upload to "succeed" even if queue fails?
+            # No, better to fail.
+            raise HTTPException(status_code=500, detail="Failed to queue reconstruction task")
+            
+        log_time("STEP 2: Queue Task", queue_start)
         
         print(f"\n{'='*80}")
-        print(f"{Colors.GREEN}✅ [POST /pointcloud/{id}] ENDPOINT COMPLETE{Colors.RESET}")
+        print(f"{Colors.GREEN}✅ [POST /pointcloud/{id}] ENDPOINT COMPLETE (Queued){Colors.RESET}")
         log_time("🎯 TOTAL ENDPOINT TIME", endpoint_start)
         print(f"{'='*80}\n")
-        # return a simple json response signaling success so user can refetch the model
-        return {"success": True}
+        
+        return {"success": True, "message": "Image uploaded and queued for processing"}
         # return Response(
         #     content=multipart_data.to_string(),
         #     media_type=multipart_data.content_type

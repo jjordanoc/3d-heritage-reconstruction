@@ -130,9 +130,12 @@ async function uploadFile() {
     const data = await res.json()
     
     if (data.success) {
-      // Trigger reload with fade animation
-      reloading.value = true
-      await viewerRef.value?.reloadPointCloud(id)
+      // NOTE: We don't trigger reload here anymore because the update
+      // comes asynchronously via WebSocket when reconstruction finishes.
+      // We just reset the UI state.
+      // reloading.value = true 
+      // await viewerRef.value?.reloadPointCloud(id)
+      console.log("Upload successful, waiting for WebSocket update...")
     }
     
     discardFile()

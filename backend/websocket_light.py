@@ -177,7 +177,7 @@ def process_infered_data(inf_data_path, id, conf_thres=50):
     image=image, 
     volumes={VOL_MOUNT_PATH: volume}, 
     timeout=600,
-    concurrency_limit=10
+    max_containers=10
 )
 def process_queue():
     import shutil
@@ -215,23 +215,54 @@ def process_queue():
                 time.sleep(1)
                 continue
             
+            # --- OPTIMIZATION: Folder Timestamp Check ---
+            try:
+                project_root = VOL_MOUNT_PATH / "backend_data" / "reconstructions" / project_id
+                images_folder = project_root / "images"
+                outputs_folder = project_root / "models"
+                
+                # Get current folder mtime
+                # Note: Modal volumes might not update folder mtime on file write immediately in all contexts,
+                # but usually checking the latest file mtime or folder mtime works.
+                # A more robust check is max(file.stat().st_mtime for file in folder.iterdir())
+                # but folder.stat().st_mtime is cheaper. Let's use folder mtime for now.
+                # Wait, volume.reload() is needed before checking mtime
+                volume.reload()
+                
+                if images_folder.exists():
+                    folder_mtime = images_folder.stat().st_mtime
+                    
+                    # Check if we can skip
+                    last_processed_ts = current_state.get("last_processed_timestamp", 0) if current_state else 0
+                    
+                    if folder_mtime <= last_processed_ts:
+                        print(f"Skipping inference for {image_id}: Folder unchanged (mtime {folder_mtime} <= last {last_processed_ts})")
+                        # We still need to notify the client? Maybe not, if it's already done.
+                        # But if we skip, we should probably tell the client "it's ready".
+                        
+                        # Wait, if we skip, we should ensure the status is "updated".
+                        reconstruction_state[project_id] = {
+                            "latest_image_id": image_id,
+                            "timestamp": time.time(),
+                            "status": "updated",
+                            "last_processed_timestamp": last_processed_ts
+                        }
+                        continue
+            except Exception as e:
+                print(f"Timestamp check failed: {e}. Proceeding with inference.")
+
             print(f"Processing: Project {project_id}, Image {image_id}")
             
             # Acquire Lock
             reconstruction_state[project_id] = {
                 "latest_image_id": image_id, 
                 "timestamp": time.time(),
-                "status": "processing"
+                "status": "processing",
+                # Keep old timestamp until finished
+                "last_processed_timestamp": current_state.get("last_processed_timestamp", 0) if current_state else 0
             }
             
-            # Construct paths
-            project_root = VOL_MOUNT_PATH / "backend_data" / "reconstructions" / project_id
-            images_folder = project_root / "images"
-            outputs_folder = project_root / "models"
             images_path_relative = f"/backend_data/reconstructions/{project_id}/images" # Path relative to volume root for inference
-
-            # Reload volume to ensure we have latest files
-            volume.reload()
 
             try:
                 # 1. Run Inference
@@ -241,8 +272,10 @@ def process_queue():
                 print(f"Inference complete. Results at {inference_path}")
 
                 # 2. Save predictions.pt to project folder
+                volume.reload()
                 standard_predictions_path = project_root / "predictions.pt"
                 shutil.copy2(inference_path, str(standard_predictions_path))
+                volume.commit()
                 
                 # 3. Process Inference Data (create PLY)
                 result_ply = process_infered_data(str(standard_predictions_path), project_id)
@@ -250,11 +283,23 @@ def process_queue():
                 # Commit volume changes
                 volume.commit()
                 
+                # Get new mtime AFTER processing/committing?
+                # No, we want the mtime of the INPUT images folder that we just processed.
+                # We already captured it in `folder_mtime` before the run.
+                # Wait, if new images arrived DURING the run, folder_mtime might have increased.
+                # We should re-check the folder mtime now to safely say "we processed up to THIS time".
+                volume.reload()
+                if images_folder.exists():
+                    new_folder_mtime = images_folder.stat().st_mtime
+                else:
+                    new_folder_mtime = time.time()
+
                 # Update state (Unlock)
                 reconstruction_state[project_id] = {
                     "latest_image_id": image_id,
                     "timestamp": time.time(),
-                    "status": "updated"
+                    "status": "updated",
+                    "last_processed_timestamp": new_folder_mtime
                 }
                 print(f"State updated for {project_id}")
                 
@@ -401,51 +446,16 @@ def fastapi_app():
         await manager.connect(project_id, websocket)
         try:
             while True:
+                # Just listen for messages to keep connection alive
+                # The client currently sends nothing except maybe pings?
+                # If we want to support client-initiated actions later, we can add them here.
                 data = await websocket.receive_json()
                 
-                if data.get("type") == "upload_image":
-                    image_data = data.get("image_data")
-                    if image_data:
-                        try:
-                            # Decode (CPU bound, usually fast enough, but good to offload if large)
-                            image_bytes = base64.b64decode(image_data)
-                            
-                            # 1. Preprocess (CPU bound)
-                            # Simple enough to keep in thread or main loop if fast
-                            img = preprocess_image(image_bytes)
-                            
-                            # 2. Save to Volume (Blocking I/O) -> Run in thread
-                            image_uuid = await asyncio.to_thread(
-                                save_image_to_volume, 
-                                project_id, 
-                                img
-                            )
-                            
-                            # 3. Queue (Network bound) -> Use .aio
-                            await reconstruction_queue.put.aio({
-                                "project_id": project_id, 
-                                "image_id": image_uuid
-                            })
-                            
-                            # 4. Trigger Worker (Scale from Zero)
-                            # We spawn a worker to ensure the queue gets processed.
-                            # If workers are already running (busy), this might spawn an extra one
-                            # up to concurrency limit, which is fine.
-                            # If a worker is idle, it picks up the task.
-                            process_queue.spawn()
-                            
-                            await websocket.send_json({
-                                "type": "upload_acknowledged",
-                                "image_id": image_uuid,
-                                "message": "Image queued for processing"
-                            })
-                        except Exception as e:
-                            print(f"Error processing upload: {e}")
-                            await websocket.send_json({
-                                "type": "error",
-                                "message": f"Upload failed: {str(e)}"
-                            })
-                        
+                # No upload logic here anymore. 
+                # We can support a "ping" or simple echo if needed.
+                if data.get("type") == "ping":
+                    await websocket.send_json({"type": "pong"})
+
         except WebSocketDisconnect:
             manager.disconnect(project_id, websocket)
         except Exception as e:
