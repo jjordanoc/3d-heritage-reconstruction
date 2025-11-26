@@ -305,9 +305,11 @@ def process_queue(project_id: str):
             "image_id": image_id,
             "timestamp": ts,
             "status": "updated",
-            "last_processed_timestamp": new_folder_mtime
+            "last_processed_timestamp": new_folder_mtime,
+            "project_id": project_id # Add project_id to event so consumer knows who to notify
         }
-        notification_queue.put(event, partition=project_id)
+        # CRITICAL CHANGE: Use DEFAULT partition for notifications so central consumer can drain all
+        notification_queue.put(event)
         
         print(f"{Colors.GREEN}State updated for {project_id}{Colors.RESET}")
         log_time("Total Process Queue Item", process_start_total)
@@ -332,14 +334,49 @@ def process_queue(project_id: str):
             "image_id": image_id,
             "timestamp": ts,
             "status": "error",
-            "error": str(e)
+            "error": str(e),
+            "project_id": project_id
         }
-        notification_queue.put(event, partition=project_id)
+        # CRITICAL CHANGE: Use DEFAULT partition
+        notification_queue.put(event)
+
+class ConnectionManager:
+    def __init__(self):
+        self.active_connections: dict[str, list[WebSocket]] = {}
+
+    async def connect(self, project_id: str, websocket: WebSocket):
+        await websocket.accept()
+        if project_id not in self.active_connections:
+            self.active_connections[project_id] = []
+        self.active_connections[project_id].append(websocket)
+        print(f"Client connected to {project_id}. Total: {len(self.active_connections[project_id])}")
+
+    def disconnect(self, project_id: str, websocket: WebSocket):
+        if project_id in self.active_connections:
+            if websocket in self.active_connections[project_id]:
+                self.active_connections[project_id].remove(websocket)
+            if not self.active_connections[project_id]:
+                del self.active_connections[project_id]
+        print(f"Client disconnected from {project_id}")
+
+    async def broadcast(self, project_id: str, message: dict):
+        if project_id in self.active_connections:
+            disconnected = []
+            for connection in self.active_connections[project_id]:
+                try:
+                    await connection.send_json(message)
+                except Exception:
+                    disconnected.append(connection)
+            
+            for connection in disconnected:
+                self.disconnect(project_id, connection)
+
+manager = ConnectionManager()
 
 @app.function(
     image=image, 
     volumes={VOL_MOUNT_PATH: volume}, 
-    max_containers=100,
+    max_containers=1, # MUST be 1 to allow centralized ConnectionManager
     timeout=24*60*60 # 24 hours
 )
 @modal.asgi_app()
@@ -354,76 +391,70 @@ def fastapi_app():
         allow_headers=["*"],
     )
 
+    @web_app.on_event("startup")
+    async def startup_event():
+        print("Starting notification consumer...")
+        asyncio.create_task(consume_notifications())
+
+    async def consume_notifications():
+        print("Notification consumer running...")
+        while True:
+            try:
+                # Use get_many with blocking to wait efficiently
+                # Draining default partition
+                items = await notification_queue.get_many.aio(block=True, timeout=5.0, n_values=100)
+                
+                if items:
+                    print(f"Consumer: Received {len(items)} notifications")
+                    for item in items:
+                        pid = item.get("project_id")
+                        if pid:
+                            await manager.broadcast(pid, item)
+                        else:
+                            print(f"Warning: Notification missing project_id: {item}")
+
+            except queue.Empty:
+                # Timeout reached, loop again
+                pass
+            except Exception as e:
+                print(f"Error in notification consumer: {e}")
+            
+            # Tiny sleep not strictly needed with blocking get, but safe
+            await asyncio.sleep(0.01)
+
     @web_app.get("/health")
     async def health():
         return {"status": "ok"}
 
     @web_app.websocket("/ws/{project_id}")
     async def websocket_endpoint(websocket: WebSocket, project_id: str):
-        await websocket.accept()
-        print(f"Client connected to {project_id}")
+        await manager.connect(project_id, websocket)
         
-        # 1. Initial Sync (Snapshot)
-        try:
-            # Use .aio to avoid blocking
-            state = await reconstruction_state.get.aio(project_id)
-            if state:
-                msg = {
-                    "type": "update",
-                    "image_id": state.get("latest_image_id"),
-                    "timestamp": state.get("timestamp"),
-                    "status": state.get("status")
-                }
-                if state.get("status") == "error":
-                    msg["error"] = state.get("error")
-                await websocket.send_json(msg)
-        except KeyError:
-            pass
-        except Exception as e:
-            print(f"Error fetching initial state: {e}")
+        # Initial Sync
+        # try:
+        #     state = await reconstruction_state.get.aio(project_id)
+        #     if state:
+        #         msg = {
+        #             "type": "update",
+        #             "image_id": state.get("latest_image_id"),
+        #             "timestamp": state.get("timestamp"),
+        #             "status": state.get("status")
+        #         }
+        #         if state.get("status") == "error":
+        #             msg["error"] = state.get("error")
+        #         await websocket.send_json(msg)
+        # except Exception:
+        #     pass
 
-        # 2. Concurrency: Listen to Client (Ping) AND Stream Notifications
-        async def notification_generator():
+        try:
             while True:
-                # Iterate through notifications for this project
-                # item_poll_timeout allows it to wait for new items
-                try:
-                    async for event in notification_queue.iterate(partition=project_id, item_poll_timeout=10.0):
-                        try:
-                            await websocket.send_json(event)
-                        except Exception as e:
-                            print(f"Error sending notification: {e}")
-                            return # Stop generator if socket is dead
-                except Exception as e:
-                    print(f"Notification generator error: {e}")
-                    await asyncio.sleep(1)
-
-        async def client_listener():
-            try:
-                while True:
-                    data = await websocket.receive_json()
-                    if data.get("type") == "ping":
-                        await websocket.send_json({"type": "pong"})
-            except WebSocketDisconnect:
-                print(f"Client disconnected from {project_id}")
-            except Exception as e:
-                print(f"Error in client listener: {e}")
-
-        # Run both tasks
-        try:
-            notify_task = asyncio.create_task(notification_generator())
-            listener_task = asyncio.create_task(client_listener())
-            
-            done, pending = await asyncio.wait(
-                [notify_task, listener_task], 
-                return_when=asyncio.FIRST_COMPLETED
-            )
-            
-            for task in pending:
-                task.cancel()
-                
+                data = await websocket.receive_json()
+                if data.get("type") == "ping":
+                    await websocket.send_json({"type": "pong"})
+        except WebSocketDisconnect:
+            manager.disconnect(project_id, websocket)
         except Exception as e:
-            print(f"WebSocket handler error: {e}")
+            print(f"Error in websocket: {e}")
+            manager.disconnect(project_id, websocket)
 
     return web_app
-
