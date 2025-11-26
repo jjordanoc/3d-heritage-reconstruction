@@ -177,9 +177,9 @@ def process_infered_data(inf_data_path, id, conf_thres=50):
     image=image, 
     volumes={VOL_MOUNT_PATH: volume}, 
     timeout=24*60*60, # 24 hours
-    max_containers=10
+    max_containers=1
 )
-def process_queue():
+def process_queue(project_id: str):
     import shutil
     
     # Instantiate the model inference class from the other app
@@ -190,198 +190,151 @@ def process_queue():
         print(f"Error connecting to inference model: {e}")
         return
 
-    print("Worker started, waiting for tasks...")
+    print(f"Worker started for project {project_id}")
     
-    # Process items until queue is empty for a short duration
-    # This allows the container to stay warm for bursts but scale down when idle
-    while True:
-        try:
-            # Fetch item with timeout (e.g., 10 seconds)
-            # If nothing arrives within timeout, assume we can exit (scale to zero)
-            item = reconstruction_queue.get(block=True, timeout=10) 
-            
-            project_id = item["project_id"]
-            image_id = item["image_id"]
-            
-            # --- LOCK CHECK ---
-            try:
-                current_state = reconstruction_state.get(project_id)
-            except KeyError:
-                current_state = None
-            
-            if current_state and current_state.get("status") == "processing":
-                print(f"Project {project_id} is busy. Re-queueing {image_id}")
-                reconstruction_queue.put(item) 
-                time.sleep(1)
-                continue
-            # unnecessary overhead, this would have to be implemented differently just using the queue order
-            # all items in the queue should be processed at once
-            # --- OPTIMIZATION: Folder Timestamp Check ---
-            # try:
-            #     project_root = VOL_MOUNT_PATH / "backend_data" / "reconstructions" / project_id
-            #     images_folder = project_root / "images"
-            #     outputs_folder = project_root / "models"
-                
-            #     volume.reload()
-                
-            #     if images_folder.exists():
-            #         folder_mtime = images_folder.stat().st_mtime
-                    
-            #         # Check if we can skip
-            #         last_processed_ts = current_state.get("last_processed_timestamp", 0) if current_state else 0
-                    
-            #         if folder_mtime <= last_processed_ts:
-            #             print(f"Skipping inference for {image_id}: Folder unchanged (mtime {folder_mtime} <= last {last_processed_ts})")
-                        
-            #             ts = time.time()
-            #             reconstruction_state[project_id] = {
-            #                 "latest_image_id": image_id,
-            #                 "timestamp": ts,
-            #                 "status": "updated",
-            #                 "last_processed_timestamp": last_processed_ts
-            #             }
-                        
-            #             # Notify
-            #             event = {
-            #                 "type": "update",
-            #                 "image_id": image_id,
-            #                 "timestamp": ts,
-            #                 "status": "updated",
-            #                 "last_processed_timestamp": last_processed_ts
-            #             }
-            #             notification_queue.put(event, partition=project_id)
-            #             continue
-            # except Exception as e:
-            #     print(f"Timestamp check failed: {e}. Proceeding with inference.")
+    # Drain queue logic
+    try:
+        # Non-blocking drain of the partition
+        items = reconstruction_queue.get_many(partition=project_id, n_values=100, block=False)
+    except queue.Empty:
+        # Should generally not happen if spawned by REST API, but good for robustness
+        print(f"No items found for project {project_id}. Exiting.")
+        return
 
-            print(f"{Colors.CYAN}Processing: Project {project_id}, Image {image_id}{Colors.RESET}")
-            process_start_total = time.time()
-            
-            # Acquire Lock
-            lock_start = time.time()
-            reconstruction_state[project_id] = {
-                "latest_image_id": image_id, 
-                "timestamp": time.time(),
-                "status": "processing",
-                # Keep old timestamp until finished
-                "last_processed_timestamp": current_state.get("last_processed_timestamp", 0) if current_state else 0
-            }
-            log_time("Acquire Lock", lock_start)
-            
-            images_path_relative = f"/backend_data/reconstructions/{project_id}/images" # Path relative to volume root for inference
+    if not items:
+        print(f"Empty batch for {project_id}. Exiting.")
+        return
 
-            try:
-                # 1. Run Inference
-                print(f"{Colors.CYAN}Starting remote inference for {project_id}...{Colors.RESET}")
-                
-                inf_start = time.time()
-                inf_res_path = inference_obj.run_inference.remote(images_path_relative)
-                log_time("Remote Inference", inf_start)
-                
-                inference_path = str(VOL_MOUNT_PATH) + inf_res_path + "/predictions.pt"
-                print(f"{Colors.GREEN}Inference complete. Results at {inference_path}{Colors.RESET}")
+    # Deduplicate? No, we just use the project_id. The fact that we have items is the trigger.
+    # We just need to process the project ONCE.
+    
+    print(f"{Colors.CYAN}Processing batch of {len(items)} items for Project {project_id}{Colors.RESET}")
+    
+    # Use the LAST item's image_id as the "latest" identifier for status updates
+    latest_item = items[-1]
+    image_id = latest_item["image_id"]
+    
+    # --- LOCK CHECK ---
+    try:
+        current_state = reconstruction_state.get(project_id)
+    except KeyError:
+        current_state = None
+    
+    if current_state and current_state.get("status") == "processing":
+        print(f"Project {project_id} is currently busy. Re-queueing {len(items)} items.")
+        # Re-queue the items to the back of the partition
+        reconstruction_queue.put_many(items, partition=project_id)
+        time.sleep(1)
+        return
 
-                # 2. Save predictions.pt to project folder
-                vol_sync_start = time.time()
-                volume.reload()
-                log_time("Volume Reload", vol_sync_start)
-                
-                # DEBUG: Check if file exists
-                if not os.path.exists(inference_path):
-                    print(f"{Colors.RED}DEBUG: File MISSING at {inference_path}{Colors.RESET}")
-                    parent_dir = Path(inference_path).parent.parent
-                    if parent_dir.exists():
-                        print(f"DEBUG: Contents of {parent_dir}: {os.listdir(parent_dir)}")
-                        target_uuid = Path(inference_path).parent.name
-                        print(f"DEBUG: Looking for UUID folder: {target_uuid}")
-                    else:
-                        print(f"DEBUG: Parent dir {parent_dir} does not exist!")
-                else:
-                    print(f"DEBUG: File FOUND at {inference_path}")
-                
-                # unnecessary overhead, use the inference path directly
-                # copy_start = time.time()
-                # standard_predictions_path = project_root / "predictions.pt"
-                # shutil.copy2(inference_path, str(standard_predictions_path))
-                # log_time("Copy predictions.pt", copy_start)
-                
-                # commit_start = time.time()
-                # volume.commit()
-                # log_time("Volume Commit (predictions.pt)", commit_start)
-                
-                # 3. Process Inference Data (create PLY)
-                ply_proc_start = time.time()
-                result_ply = process_infered_data(str(inference_path), project_id)
-                log_time("Process Inferred Data (PLY)", ply_proc_start)
-                
-                # Commit volume changes
-                commit_ply_start = time.time()
-                volume.commit()
-                log_time("Volume Commit (PLY)", commit_ply_start)
-                
-                check_mtime_start = time.time()
-                # adds unnecessary overhead, changes inside the current container are already reflected 
-                # volume.reload()
-                if images_folder.exists():
-                    new_folder_mtime = images_folder.stat().st_mtime
-                else:
-                    new_folder_mtime = time.time()
-                log_time("Check Final mtime", check_mtime_start)
+    process_start_total = time.time()
+    
+    # Acquire Lock
+    lock_start = time.time()
+    reconstruction_state[project_id] = {
+        "latest_image_id": image_id, 
+        "timestamp": time.time(),
+        "status": "processing",
+        "last_processed_timestamp": current_state.get("last_processed_timestamp", 0) if current_state else 0
+    }
+    log_time("Acquire Lock", lock_start)
+    
+    images_path_relative = f"/backend_data/reconstructions/{project_id}/images" # Path relative to volume root for inference
 
-                # Update state (Unlock)
-                unlock_start = time.time()
-                ts = time.time()
-                reconstruction_state[project_id] = {
-                    "latest_image_id": image_id,
-                    "timestamp": ts,
-                    "status": "updated",
-                    "last_processed_timestamp": new_folder_mtime
-                }
-                log_time("Unlock State", unlock_start)
-                
-                # Notify
-                event = {
-                    "type": "update",
-                    "image_id": image_id,
-                    "timestamp": ts,
-                    "status": "updated",
-                    "last_processed_timestamp": new_folder_mtime
-                }
-                notification_queue.put(event, partition=project_id)
-                
-                print(f"{Colors.GREEN}State updated for {project_id}{Colors.RESET}")
-                log_time("Total Process Queue Item", process_start_total)
-                
-            except Exception as e:
-                print(f"Error in pipeline execution: {e}")
-                import traceback
-                traceback.print_exc()
-                
-                # Release lock on error
-                ts = time.time()
-                reconstruction_state[project_id] = {
-                    "latest_image_id": image_id,
-                    "timestamp": ts,
-                    "status": "error",
-                    "error": str(e)
-                }
-                
-                # Notify Error
-                event = {
-                    "type": "update",
-                    "image_id": image_id,
-                    "timestamp": ts,
-                    "status": "error",
-                    "error": str(e)
-                }
-                notification_queue.put(event, partition=project_id)
+    try:
+        # 1. Run Inference
+        print(f"{Colors.CYAN}Starting remote inference for {project_id}...{Colors.RESET}")
         
-        except queue.Empty:
-            print("Queue empty for timeout duration. Exiting worker.")
-            break
-        except Exception as e:
-            print(f"Error in worker loop: {e}")
-            time.sleep(1)
+        inf_start = time.time()
+        inf_res_path = inference_obj.run_inference.remote(images_path_relative)
+        log_time("Remote Inference", inf_start)
+        
+        inference_path = str(VOL_MOUNT_PATH) + inf_res_path + "/predictions.pt"
+        print(f"{Colors.GREEN}Inference complete. Results at {inference_path}{Colors.RESET}")
+
+        # 2. Save predictions.pt to project folder
+        vol_sync_start = time.time()
+        volume.reload()
+        log_time("Volume Reload", vol_sync_start)
+        
+        # DEBUG: Check if file exists
+        if not os.path.exists(inference_path):
+            print(f"{Colors.RED}DEBUG: File MISSING at {inference_path}{Colors.RESET}")
+            parent_dir = Path(inference_path).parent.parent
+            if parent_dir.exists():
+                print(f"DEBUG: Contents of {parent_dir}: {os.listdir(parent_dir)}")
+                target_uuid = Path(inference_path).parent.name
+                print(f"DEBUG: Looking for UUID folder: {target_uuid}")
+            else:
+                print(f"DEBUG: Parent dir {parent_dir} does not exist!")
+        else:
+            print(f"DEBUG: File FOUND at {inference_path}")
+        
+        # 3. Process Inference Data (create PLY)
+        ply_proc_start = time.time()
+        result_ply = process_infered_data(str(inference_path), project_id)
+        log_time("Process Inferred Data (PLY)", ply_proc_start)
+        
+        # Commit volume changes
+        commit_ply_start = time.time()
+        volume.commit()
+        log_time("Volume Commit (PLY)", commit_ply_start)
+        
+        images_folder = Path(VOL_MOUNT_PATH) / "backend_data" / "reconstructions" / project_id / "images"
+        check_mtime_start = time.time()
+        if images_folder.exists():
+            new_folder_mtime = images_folder.stat().st_mtime
+        else:
+            new_folder_mtime = time.time()
+        log_time("Check Final mtime", check_mtime_start)
+
+        # Update state (Unlock)
+        unlock_start = time.time()
+        ts = time.time()
+        reconstruction_state[project_id] = {
+            "latest_image_id": image_id,
+            "timestamp": ts,
+            "status": "updated",
+            "last_processed_timestamp": new_folder_mtime
+        }
+        log_time("Unlock State", unlock_start)
+        
+        # Notify
+        event = {
+            "type": "update",
+            "image_id": image_id,
+            "timestamp": ts,
+            "status": "updated",
+            "last_processed_timestamp": new_folder_mtime
+        }
+        notification_queue.put(event, partition=project_id)
+        
+        print(f"{Colors.GREEN}State updated for {project_id}{Colors.RESET}")
+        log_time("Total Process Queue Item", process_start_total)
+        
+    except Exception as e:
+        print(f"Error in pipeline execution: {e}")
+        import traceback
+        traceback.print_exc()
+        
+        # Release lock on error
+        ts = time.time()
+        reconstruction_state[project_id] = {
+            "latest_image_id": image_id,
+            "timestamp": ts,
+            "status": "error",
+            "error": str(e)
+        }
+        
+        # Notify Error
+        event = {
+            "type": "update",
+            "image_id": image_id,
+            "timestamp": ts,
+            "status": "error",
+            "error": str(e)
+        }
+        notification_queue.put(event, partition=project_id)
 
 @app.function(
     image=image, 
@@ -411,23 +364,23 @@ def fastapi_app():
         print(f"Client connected to {project_id}")
         
         # 1. Initial Sync (Snapshot)
-        # try:
-        #     # Use .aio to avoid blocking
-        #     state = await reconstruction_state.get.aio(project_id)
-        #     if state:
-        #         msg = {
-        #             "type": "update",
-        #             "image_id": state.get("latest_image_id"),
-        #             "timestamp": state.get("timestamp"),
-        #             "status": state.get("status")
-        #         }
-        #         if state.get("status") == "error":
-        #             msg["error"] = state.get("error")
-        #         await websocket.send_json(msg)
-        # except KeyError:
-        #     pass
-        # except Exception as e:
-        #     print(f"Error fetching initial state: {e}")
+        try:
+            # Use .aio to avoid blocking
+            state = await reconstruction_state.get.aio(project_id)
+            if state:
+                msg = {
+                    "type": "update",
+                    "image_id": state.get("latest_image_id"),
+                    "timestamp": state.get("timestamp"),
+                    "status": state.get("status")
+                }
+                if state.get("status") == "error":
+                    msg["error"] = state.get("error")
+                await websocket.send_json(msg)
+        except KeyError:
+            pass
+        except Exception as e:
+            print(f"Error fetching initial state: {e}")
 
         # 2. Concurrency: Listen to Client (Ping) AND Stream Notifications
         async def notification_generator():
@@ -474,8 +427,3 @@ def fastapi_app():
 
     return web_app
 
-@app.local_entrypoint()
-def main():
-    print("Spawning worker process...")
-    process_queue.spawn()
-    print("To run the server: modal serve backend/websocket_light.py")

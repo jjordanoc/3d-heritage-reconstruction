@@ -566,14 +566,14 @@ def fastapi_app():
             image_id = Path(uploaded).stem
             
             task = {"project_id": id, "image_id": image_id}
-            reconstruction_queue.put(task)
-            print(f"{Colors.GREEN}✅ Pushed task to queue: {task}{Colors.RESET}")
+            reconstruction_queue.put(task, partition=id)
+            print(f"{Colors.GREEN}✅ Pushed task to queue: {task} (Partition: {id}){Colors.RESET}")
             
             # Trigger worker
             try:
                 worker = modal.Function.from_name("websocket-light", "process_queue")
-                worker.spawn()
-                print(f"{Colors.GREEN}✅ Triggered worker spawn{Colors.RESET}")
+                worker.spawn(id)
+                print(f"{Colors.GREEN}✅ Triggered worker spawn for project {id}{Colors.RESET}")
             except Exception as e:
                 print(f"{Colors.RED}⚠️  WARNING: Could not spawn worker: {e}{Colors.RESET}")
                 
