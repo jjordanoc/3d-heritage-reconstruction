@@ -29,19 +29,6 @@ def log_time(label, start_time):
     elapsed = time.time() - start_time
     print(f"{Colors.YELLOW}[TIME] [{label}] took {elapsed:.3f}s{Colors.RESET}")
     return elapsed
-#     "git",
-#     "libgl1-mesa-glx",  # Provides libGL.so.1
-#     "libglib2.0-0",     # Often needed by Open3D
-# ).pip_install([
-#     "fastapi[standard]",
-#     "pillow",
-#     "python-multipart",
-#     "torch",
-#     "torchvision",
-#     "numpy",
-#     "open3d",
-#     "requests-toolbelt"
-# ])
 
 image = modal.Image.debian_slim(python_version="3.10").apt_install(
         "git",  # if you need it
@@ -64,6 +51,7 @@ app = modal.App("websocket-light", image=image)
 
 # Setup Queue and Dict
 reconstruction_queue = modal.Queue.from_name("reconstruction-queue", create_if_missing=True)
+notification_queue = modal.Queue.from_name("notification-queue", create_if_missing=True)
 reconstruction_state = modal.Dict.from_name("reconstruction-state", create_if_missing=True)
 
 # Helper to process image (resize)
@@ -210,7 +198,7 @@ def process_queue():
         try:
             # Fetch item with timeout (e.g., 10 seconds)
             # If nothing arrives within timeout, assume we can exit (scale to zero)
-            item = reconstruction_queue.get(timeout=10) 
+            item = reconstruction_queue.get(block=True, timeout=10) 
             
             project_id = item["project_id"]
             image_id = item["image_id"]
@@ -233,12 +221,6 @@ def process_queue():
                 images_folder = project_root / "images"
                 outputs_folder = project_root / "models"
                 
-                # Get current folder mtime
-                # Note: Modal volumes might not update folder mtime on file write immediately in all contexts,
-                # but usually checking the latest file mtime or folder mtime works.
-                # A more robust check is max(file.stat().st_mtime for file in folder.iterdir())
-                # but folder.stat().st_mtime is cheaper. Let's use folder mtime for now.
-                # Wait, volume.reload() is needed before checking mtime
                 volume.reload()
                 
                 if images_folder.exists():
@@ -249,16 +231,24 @@ def process_queue():
                     
                     if folder_mtime <= last_processed_ts:
                         print(f"Skipping inference for {image_id}: Folder unchanged (mtime {folder_mtime} <= last {last_processed_ts})")
-                        # We still need to notify the client? Maybe not, if it's already done.
-                        # But if we skip, we should probably tell the client "it's ready".
                         
-                        # Wait, if we skip, we should ensure the status is "updated".
+                        ts = time.time()
                         reconstruction_state[project_id] = {
                             "latest_image_id": image_id,
-                            "timestamp": time.time(),
+                            "timestamp": ts,
                             "status": "updated",
                             "last_processed_timestamp": last_processed_ts
                         }
+                        
+                        # Notify
+                        event = {
+                            "type": "update",
+                            "image_id": image_id,
+                            "timestamp": ts,
+                            "status": "updated",
+                            "last_processed_timestamp": last_processed_ts
+                        }
+                        notification_queue.put(event, partition=project_id)
                         continue
             except Exception as e:
                 print(f"Timestamp check failed: {e}. Proceeding with inference.")
@@ -282,10 +272,6 @@ def process_queue():
             try:
                 # 1. Run Inference
                 print(f"{Colors.CYAN}Starting remote inference for {project_id}...{Colors.RESET}")
-                # Verify volume is mounted correctly before inference
-                # print(f"DEBUG: Worker VOL_MOUNT_PATH: {VOL_MOUNT_PATH}, Exists: {VOL_MOUNT_PATH.exists()}")
-                # if VOL_MOUNT_PATH.exists():
-                #    print(f"DEBUG: Volume root contents: {os.listdir(VOL_MOUNT_PATH)}")
                 
                 inf_start = time.time()
                 inf_res_path = inference_obj.run_inference.remote(images_path_relative)
@@ -302,11 +288,9 @@ def process_queue():
                 # DEBUG: Check if file exists
                 if not os.path.exists(inference_path):
                     print(f"{Colors.RED}DEBUG: File MISSING at {inference_path}{Colors.RESET}")
-                    # List parent dir to see what's there
                     parent_dir = Path(inference_path).parent.parent
                     if parent_dir.exists():
                         print(f"DEBUG: Contents of {parent_dir}: {os.listdir(parent_dir)}")
-                        # Check if we can find the UUID folder
                         target_uuid = Path(inference_path).parent.name
                         print(f"DEBUG: Looking for UUID folder: {target_uuid}")
                     else:
@@ -333,11 +317,6 @@ def process_queue():
                 volume.commit()
                 log_time("Volume Commit (PLY)", commit_ply_start)
                 
-                # Get new mtime AFTER processing/committing?
-                # No, we want the mtime of the INPUT images folder that we just processed.
-                # We already captured it in `folder_mtime` before the run.
-                # Wait, if new images arrived DURING the run, folder_mtime might have increased.
-                # We should re-check the folder mtime now to safely say "we processed up to THIS time".
                 check_mtime_start = time.time()
                 volume.reload()
                 if images_folder.exists():
@@ -348,13 +327,24 @@ def process_queue():
 
                 # Update state (Unlock)
                 unlock_start = time.time()
+                ts = time.time()
                 reconstruction_state[project_id] = {
                     "latest_image_id": image_id,
-                    "timestamp": time.time(),
+                    "timestamp": ts,
                     "status": "updated",
                     "last_processed_timestamp": new_folder_mtime
                 }
                 log_time("Unlock State", unlock_start)
+                
+                # Notify
+                event = {
+                    "type": "update",
+                    "image_id": image_id,
+                    "timestamp": ts,
+                    "status": "updated",
+                    "last_processed_timestamp": new_folder_mtime
+                }
+                notification_queue.put(event, partition=project_id)
                 
                 print(f"{Colors.GREEN}State updated for {project_id}{Colors.RESET}")
                 log_time("Total Process Queue Item", process_start_total)
@@ -365,12 +355,23 @@ def process_queue():
                 traceback.print_exc()
                 
                 # Release lock on error
+                ts = time.time()
                 reconstruction_state[project_id] = {
                     "latest_image_id": image_id,
-                    "timestamp": time.time(),
+                    "timestamp": ts,
                     "status": "error",
                     "error": str(e)
                 }
+                
+                # Notify Error
+                event = {
+                    "type": "update",
+                    "image_id": image_id,
+                    "timestamp": ts,
+                    "status": "error",
+                    "error": str(e)
+                }
+                notification_queue.put(event, partition=project_id)
         
         except queue.Empty:
             print("Queue empty for timeout duration. Exiting worker.")
@@ -378,54 +379,6 @@ def process_queue():
         except Exception as e:
             print(f"Error in worker loop: {e}")
             time.sleep(1)
-
-class ConnectionManager:
-    def __init__(self):
-        self.active_connections: dict[str, list[WebSocket]] = {}
-
-    async def connect(self, project_id: str, websocket: WebSocket):
-        await websocket.accept()
-        if project_id not in self.active_connections:
-            self.active_connections[project_id] = []
-        self.active_connections[project_id].append(websocket)
-        print(f"Client connected to {project_id}. Total: {len(self.active_connections[project_id])}")
-
-    def disconnect(self, project_id: str, websocket: WebSocket):
-        if project_id in self.active_connections:
-            if websocket in self.active_connections[project_id]:
-                self.active_connections[project_id].remove(websocket)
-            if not self.active_connections[project_id]:
-                del self.active_connections[project_id]
-        print(f"Client disconnected from {project_id}")
-
-    async def broadcast(self, project_id: str, message: dict):
-        if project_id in self.active_connections:
-            disconnected = []
-            for connection in self.active_connections[project_id]:
-                try:
-                    await connection.send_json(message)
-                except Exception:
-                    disconnected.append(connection)
-            
-            for connection in disconnected:
-                self.disconnect(project_id, connection)
-
-manager = ConnectionManager()
-
-def save_image_to_volume(project_id: str, img: Image.Image):
-    """
-    Helper to save image to volume (Synchronous I/O)
-    """
-    images_dir = VOL_MOUNT_PATH / "backend_data" / "reconstructions" / project_id / "images"
-    images_dir.mkdir(parents=True, exist_ok=True)
-    
-    image_uuid = str(uuid.uuid4())
-    image_filename = f"{image_uuid}.png"
-    save_path = images_dir / image_filename
-    
-    img.save(save_path, format="PNG")
-    volume.commit() # BLOCKING I/O
-    return image_uuid
 
 @app.function(
     image=image, 
@@ -445,84 +398,74 @@ def fastapi_app():
         allow_headers=["*"],
     )
 
-    @web_app.on_event("startup")
-    async def startup_event():
-        try:
-            print("Starting state monitor...")
-            asyncio.create_task(monitor_state())
-        except Exception as e:
-            print(f"Startup error: {e}")
-
-    async def monitor_state():
-        last_timestamps = {}
-        print("State monitor running")
-        while True:
-            # loop_start = time.time() # Too verbose for polling loop
-            try:
-                # Iterate active projects
-                active_projects = list(manager.active_connections.keys())
-                
-                for project_id in active_projects:
-                    try:
-                        # Use .aio to avoid blocking on network call
-                        # fetch_start = time.time()
-                        state = await reconstruction_state.get.aio(project_id)
-                        # log_time("Fetch State", fetch_start)
-                    except KeyError:
-                        state = None
-                    except Exception as e:
-                        print(f"Error fetching state: {e}")
-                        state = None
-                        
-                    if state:
-                        ts = state.get("timestamp", 0)
-                        last_ts = last_timestamps.get(project_id, 0)
-                        
-                        if ts > last_ts:
-                            print(f"{Colors.GREEN}Detected update for {project_id}: {state}{Colors.RESET}")
-                            last_timestamps[project_id] = ts
-                            
-                            msg = {
-                                "type": "update",
-                                "image_id": state.get("latest_image_id"),
-                                "timestamp": ts,
-                                "status": state.get("status")
-                            }
-                            if state.get("status") == "error":
-                                msg["error"] = state.get("error")
-                                
-                            broadcast_start = time.time()
-                            await manager.broadcast(project_id, msg)
-                            log_time("Broadcast Update", broadcast_start)
-            except Exception as e:
-                print(f"Error in monitor_state: {e}")
-            
-            await asyncio.sleep(1)
-
     @web_app.get("/health")
     async def health():
         return {"status": "ok"}
 
     @web_app.websocket("/ws/{project_id}")
     async def websocket_endpoint(websocket: WebSocket, project_id: str):
-        await manager.connect(project_id, websocket)
+        await websocket.accept()
+        print(f"Client connected to {project_id}")
+        
+        # 1. Initial Sync (Snapshot)
         try:
-            while True:
-                # Just listen for messages to keep connection alive
-                # The client currently sends nothing except maybe pings?
-                # If we want to support client-initiated actions later, we can add them here.
-                data = await websocket.receive_json()
-                
-                # No upload logic here anymore. 
-                # We can support a "ping" or simple echo if needed.
-                if data.get("type") == "ping":
-                    await websocket.send_json({"type": "pong"})
-
-        except WebSocketDisconnect:
-            manager.disconnect(project_id, websocket)
+            # Use .aio to avoid blocking
+            state = await reconstruction_state.get.aio(project_id)
+            if state:
+                msg = {
+                    "type": "update",
+                    "image_id": state.get("latest_image_id"),
+                    "timestamp": state.get("timestamp"),
+                    "status": state.get("status")
+                }
+                if state.get("status") == "error":
+                    msg["error"] = state.get("error")
+                await websocket.send_json(msg)
+        except KeyError:
+            pass
         except Exception as e:
-            print(f"Error in websocket: {e}")
-            manager.disconnect(project_id, websocket)
+            print(f"Error fetching initial state: {e}")
+
+        # 2. Concurrency: Listen to Client (Ping) AND Stream Notifications
+        async def notification_generator():
+            # Iterate through notifications for this project
+            # item_poll_timeout allows it to wait for new items
+            try:
+                async for event in notification_queue.iterate(partition=project_id, item_poll_timeout=10.0):
+                    try:
+                        await websocket.send_json(event)
+                    except Exception as e:
+                        print(f"Error sending notification: {e}")
+                        break
+            except Exception as e:
+                print(f"Notification generator error: {e}")
+
+        async def client_listener():
+            try:
+                while True:
+                    data = await websocket.receive_json()
+                    if data.get("type") == "ping":
+                        await websocket.send_json({"type": "pong"})
+            except WebSocketDisconnect:
+                print(f"Client disconnected from {project_id}")
+            except Exception as e:
+                print(f"Error in client listener: {e}")
+
+        # Run both tasks
+        try:
+            notify_task = asyncio.create_task(notification_generator())
+            listener_task = asyncio.create_task(client_listener())
+            
+            done, pending = await asyncio.wait(
+                [notify_task, listener_task], 
+                return_when=asyncio.FIRST_COMPLETED
+            )
+            
+            for task in pending:
+                task.cancel()
+                
+        except Exception as e:
+            print(f"WebSocket handler error: {e}")
 
     return web_app
 
