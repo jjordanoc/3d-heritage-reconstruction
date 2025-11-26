@@ -214,44 +214,45 @@ def process_queue():
                 reconstruction_queue.put(item) 
                 time.sleep(1)
                 continue
-            
+            # unnecessary overhead, this would have to be implemented differently just using the queue order
+            # all items in the queue should be processed at once
             # --- OPTIMIZATION: Folder Timestamp Check ---
-            try:
-                project_root = VOL_MOUNT_PATH / "backend_data" / "reconstructions" / project_id
-                images_folder = project_root / "images"
-                outputs_folder = project_root / "models"
+            # try:
+            #     project_root = VOL_MOUNT_PATH / "backend_data" / "reconstructions" / project_id
+            #     images_folder = project_root / "images"
+            #     outputs_folder = project_root / "models"
                 
-                volume.reload()
+            #     volume.reload()
                 
-                if images_folder.exists():
-                    folder_mtime = images_folder.stat().st_mtime
+            #     if images_folder.exists():
+            #         folder_mtime = images_folder.stat().st_mtime
                     
-                    # Check if we can skip
-                    last_processed_ts = current_state.get("last_processed_timestamp", 0) if current_state else 0
+            #         # Check if we can skip
+            #         last_processed_ts = current_state.get("last_processed_timestamp", 0) if current_state else 0
                     
-                    if folder_mtime <= last_processed_ts:
-                        print(f"Skipping inference for {image_id}: Folder unchanged (mtime {folder_mtime} <= last {last_processed_ts})")
+            #         if folder_mtime <= last_processed_ts:
+            #             print(f"Skipping inference for {image_id}: Folder unchanged (mtime {folder_mtime} <= last {last_processed_ts})")
                         
-                        ts = time.time()
-                        reconstruction_state[project_id] = {
-                            "latest_image_id": image_id,
-                            "timestamp": ts,
-                            "status": "updated",
-                            "last_processed_timestamp": last_processed_ts
-                        }
+            #             ts = time.time()
+            #             reconstruction_state[project_id] = {
+            #                 "latest_image_id": image_id,
+            #                 "timestamp": ts,
+            #                 "status": "updated",
+            #                 "last_processed_timestamp": last_processed_ts
+            #             }
                         
-                        # Notify
-                        event = {
-                            "type": "update",
-                            "image_id": image_id,
-                            "timestamp": ts,
-                            "status": "updated",
-                            "last_processed_timestamp": last_processed_ts
-                        }
-                        notification_queue.put(event, partition=project_id)
-                        continue
-            except Exception as e:
-                print(f"Timestamp check failed: {e}. Proceeding with inference.")
+            #             # Notify
+            #             event = {
+            #                 "type": "update",
+            #                 "image_id": image_id,
+            #                 "timestamp": ts,
+            #                 "status": "updated",
+            #                 "last_processed_timestamp": last_processed_ts
+            #             }
+            #             notification_queue.put(event, partition=project_id)
+            #             continue
+            # except Exception as e:
+            #     print(f"Timestamp check failed: {e}. Proceeding with inference.")
 
             print(f"{Colors.CYAN}Processing: Project {project_id}, Image {image_id}{Colors.RESET}")
             process_start_total = time.time()
@@ -298,18 +299,19 @@ def process_queue():
                 else:
                     print(f"DEBUG: File FOUND at {inference_path}")
                 
-                copy_start = time.time()
-                standard_predictions_path = project_root / "predictions.pt"
-                shutil.copy2(inference_path, str(standard_predictions_path))
-                log_time("Copy predictions.pt", copy_start)
+                # unnecessary overhead, use the inference path directly
+                # copy_start = time.time()
+                # standard_predictions_path = project_root / "predictions.pt"
+                # shutil.copy2(inference_path, str(standard_predictions_path))
+                # log_time("Copy predictions.pt", copy_start)
                 
-                commit_start = time.time()
-                volume.commit()
-                log_time("Volume Commit (predictions.pt)", commit_start)
+                # commit_start = time.time()
+                # volume.commit()
+                # log_time("Volume Commit (predictions.pt)", commit_start)
                 
                 # 3. Process Inference Data (create PLY)
                 ply_proc_start = time.time()
-                result_ply = process_infered_data(str(standard_predictions_path), project_id)
+                result_ply = process_infered_data(str(inference_path), project_id)
                 log_time("Process Inferred Data (PLY)", ply_proc_start)
                 
                 # Commit volume changes
@@ -318,7 +320,8 @@ def process_queue():
                 log_time("Volume Commit (PLY)", commit_ply_start)
                 
                 check_mtime_start = time.time()
-                volume.reload()
+                # adds unnecessary overhead, changes inside the current container are already reflected 
+                # volume.reload()
                 if images_folder.exists():
                     new_folder_mtime = images_folder.stat().st_mtime
                 else:
@@ -408,37 +411,39 @@ def fastapi_app():
         print(f"Client connected to {project_id}")
         
         # 1. Initial Sync (Snapshot)
-        try:
-            # Use .aio to avoid blocking
-            state = await reconstruction_state.get.aio(project_id)
-            if state:
-                msg = {
-                    "type": "update",
-                    "image_id": state.get("latest_image_id"),
-                    "timestamp": state.get("timestamp"),
-                    "status": state.get("status")
-                }
-                if state.get("status") == "error":
-                    msg["error"] = state.get("error")
-                await websocket.send_json(msg)
-        except KeyError:
-            pass
-        except Exception as e:
-            print(f"Error fetching initial state: {e}")
+        # try:
+        #     # Use .aio to avoid blocking
+        #     state = await reconstruction_state.get.aio(project_id)
+        #     if state:
+        #         msg = {
+        #             "type": "update",
+        #             "image_id": state.get("latest_image_id"),
+        #             "timestamp": state.get("timestamp"),
+        #             "status": state.get("status")
+        #         }
+        #         if state.get("status") == "error":
+        #             msg["error"] = state.get("error")
+        #         await websocket.send_json(msg)
+        # except KeyError:
+        #     pass
+        # except Exception as e:
+        #     print(f"Error fetching initial state: {e}")
 
         # 2. Concurrency: Listen to Client (Ping) AND Stream Notifications
         async def notification_generator():
-            # Iterate through notifications for this project
-            # item_poll_timeout allows it to wait for new items
-            try:
-                async for event in notification_queue.iterate(partition=project_id, item_poll_timeout=10.0):
-                    try:
-                        await websocket.send_json(event)
-                    except Exception as e:
-                        print(f"Error sending notification: {e}")
-                        break
-            except Exception as e:
-                print(f"Notification generator error: {e}")
+            while True:
+                # Iterate through notifications for this project
+                # item_poll_timeout allows it to wait for new items
+                try:
+                    async for event in notification_queue.iterate(partition=project_id, item_poll_timeout=10.0):
+                        try:
+                            await websocket.send_json(event)
+                        except Exception as e:
+                            print(f"Error sending notification: {e}")
+                            return # Stop generator if socket is dead
+                except Exception as e:
+                    print(f"Notification generator error: {e}")
+                    await asyncio.sleep(1)
 
         async def client_listener():
             try:
