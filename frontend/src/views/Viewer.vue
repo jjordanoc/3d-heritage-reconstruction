@@ -109,6 +109,10 @@ async function uploadFile() {
 
   const form = new FormData()
   form.append('file', selectedFile.value) // backend espera 'file', no 'image'
+  
+  // Add user_id from localStorage
+  const userId = localStorage.getItem('heritage_user') || 'Guest'
+  form.append('user_id', userId)
 
   try {
     const res = await fetch(`${API_BASE}/pointcloud/${encodeURIComponent(id)}`, {
