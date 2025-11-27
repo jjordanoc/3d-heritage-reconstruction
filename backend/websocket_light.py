@@ -5,7 +5,7 @@ from pathlib import Path
 import time
 import asyncio
 import os
-
+import uuid
 import base64
 import json
 import queue  # Import standard queue for Empty exception
@@ -179,6 +179,7 @@ def process_infered_data(inf_data_path, id, conf_thres=50):
     timeout=24*60*60, # 24 hours
     max_containers=1
 )
+@modal.concurrent(max_inputs=1000)
 def process_queue(project_id: str):
     import shutil
     
@@ -346,7 +347,7 @@ def process_queue(project_id: str):
 
 class ConnectionManager:
     def __init__(self):
-        self.active_connections: dict[str, list[WebSocket]] = {}
+        self.active_connections: dict[str, list[tuple[str, WebSocket]]] = {}
 
     async def connect(self, project_id: str, user_id: str, websocket: WebSocket):
         await websocket.accept()
@@ -366,12 +367,26 @@ class ConnectionManager:
 
     async def broadcast(self, project_id: str, message: dict):
         if project_id in self.active_connections:
-            disconnected = []
-            # gather all and send to all
-            messages = []
-            for user_id, connection in self.active_connections[project_id]:
-                messages.append(connection.send_json(message))
-            await asyncio.gather(*messages)
+            # Define a safe sender wrapper
+            async def safe_send(user_id, connection):
+                try:
+                    await connection.send_json(message)
+                    return None
+                except Exception:
+                    return (user_id, connection)
+
+            # Gather all send tasks
+            tasks = [
+                safe_send(uid, conn) 
+                for uid, conn in self.active_connections[project_id]
+            ]
+            results = await asyncio.gather(*tasks)
+            
+            # Process failures
+            for result in results:
+                if result:
+                    uid, conn = result
+                    self.disconnect(project_id, uid, conn)
 
 manager = ConnectionManager()
 
@@ -381,6 +396,7 @@ manager = ConnectionManager()
     max_containers=1, # MUST be 1 to allow centralized ConnectionManager
     timeout=24*60*60 # 24 hours
 )
+@modal.concurrent(max_inputs=1000)
 @modal.asgi_app()
 def fastapi_app():
     web_app = FastAPI()
@@ -452,9 +468,10 @@ def fastapi_app():
     @web_app.websocket("/ws/{project_id}")
     async def websocket_endpoint(websocket: WebSocket, project_id: str):
         import uuid
-        user_id = uuid.uuid4()
-        await manager.connect(project_id, websocket, user_id)
+        user_id = str(uuid.uuid4())
+        await manager.connect(project_id, user_id, websocket)
         print(f"Connected to {project_id} with UUID {user_id}")
+        
         # Initial Sync
         # try:
         #     state = await reconstruction_state.get.aio(project_id)
@@ -477,9 +494,9 @@ def fastapi_app():
                 if data.get("type") == "ping":
                     await websocket.send_json({"type": "pong"})
         except WebSocketDisconnect:
-            manager.disconnect(project_id, websocket)
+            manager.disconnect(project_id, user_id, websocket)
         except Exception as e:
             print(f"Error in websocket: {e}")
-            manager.disconnect(project_id, websocket)
-
+            manager.disconnect(project_id, user_id, websocket)
+        print(f"Disconnected from {project_id} with UUID {user_id}")
     return web_app
