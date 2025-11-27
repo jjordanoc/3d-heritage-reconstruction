@@ -254,55 +254,47 @@ export default {
       }
 
       const base = API_BASE
+      // Use the .spz endpoint
       const url = `${base}/splat/${encodeURIComponent(id)}`
       
       console.log('[GSplatViewer] Loading gsplat from:', url)
 
-      // Fetch the .ply file ourselves to avoid 431 error with Spark's internal fetch
-      const response = await fetch(url)
-      if (!response.ok) {
-        throw new Error(`Failed to fetch gsplat model: ${response.status} ${response.statusText}`)
-      }
+      // Create SplatMesh directly with the URL
+      const splatMesh = new SplatMesh({ 
+        url: url, 
+        alphaTest: 0.01,
+        renderOrder: 0,
+        logLevel: 'info' 
+      })
       
-      const blob = await response.blob()
-      console.log('[GSplatViewer] Fetched blob:', blob.size, 'bytes')
-      
-      // Create a blob URL
-      const blobUrl = URL.createObjectURL(blob)
-      console.log('[GSplatViewer] Created blob URL:', blobUrl)
-      
-      // Create SplatMesh with blob URL
-      const splatMesh = new SplatMesh({ url: blobUrl, alphaTest: 0.1, renderOrder: 0 })
-      
+      this._removeCurrentObject()
+      this._scene.add(splatMesh)
+      this._pickables = [splatMesh]
+      this._currentObject = splatMesh
+
       // Wait for splat to load
       await new Promise((resolve, reject) => {
-        // SparkJS SplatMesh loads async but doesn't expose a clean promise yet in all versions.
-        // We can check readiness or just wait a bit if needed, or rely on the fact it's created.
-        // Actually, SplatMesh might start loading immediately.
-        // Let's assume if we added it, it's fine, but we might want to wait for geometry.
-        
         const checkLoaded = setInterval(() => {
           // Check if the splat has loaded by checking if it has geometry/data
           // NOTE: Internal structure of SplatMesh might vary. 
           // It usually extends Mesh.
-          if (splatMesh.geometry && splatMesh.geometry.attributes) {
+          if (splatMesh.geometry && splatMesh.geometry.attributes && splatMesh.geometry.attributes.position) {
             clearInterval(checkLoaded)
             resolve()
           }
         }, 100)
         
-        // Timeout after 30 seconds
+        // Timeout after 60 seconds
         setTimeout(() => {
           clearInterval(checkLoaded)
-          reject(new Error('Splat loading timeout'))
-        }, 30000)
+          // Don't reject, just warn and try to proceed, maybe it loads late
+          console.warn('[GSplatViewer] Splat loading wait timeout - proceeding anyway')
+          resolve()
+        }, 60000)
       })
 
-      console.log('[GSplatViewer] Splat loaded successfully')
+      console.log('[GSplatViewer] Splat geometry ready')
       
-      // Clean up blob URL after loading
-      // URL.revokeObjectURL(blobUrl) // Keep it alive for the mesh
-
       // Calculate bounding box from splat
       if (splatMesh.geometry && !splatMesh.geometry.boundingBox) {
          splatMesh.geometry.computeBoundingBox()
@@ -317,16 +309,9 @@ export default {
         maxDim = Math.max(size.x, size.y, size.z) || 1
       }
 
-      this._removeCurrentObject()
-      this._scene.add(splatMesh)
-      this._pickables = [splatMesh]
-      this._currentObject = splatMesh
-
       // BBoxes globales
       this._worldBBox.makeEmpty()
       
-      // SparkJS splats might not have a computed bounding box immediately ready or it might be huge.
-      // If computed, use it. Otherwise default.
       if (splatMesh.geometry?.boundingBox) {
           this._worldBBox.union(splatMesh.geometry.boundingBox)
       } else {

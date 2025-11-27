@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "private": true,
   "scripts": {
-    "dev": "vite",
+    "dev": "NODE_OPTIONS='--max-http-header-size=10485760' vite",
     "build": "vite build",
     "preview": "vite preview"
   },
@@ -16,6 +16,7 @@
   },
   "devDependencies": {
     "@vitejs/plugin-vue": "^5.0.0",
-    "vite": "^5.4.20"
+    "vite": "^5.4.20",
+    "vite-plugin-wasm": "^3.5.0"
   }
 }
