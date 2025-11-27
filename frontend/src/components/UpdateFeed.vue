@@ -9,58 +9,14 @@
 </template>
 
 <script setup>
-import { ref, watch, onUnmounted } from 'vue'
-import { useWebSocket } from '@vueuse/core'
-
-const props = defineProps({
-  projectId: {
-    type: String,
-    required: true
-  }
-})
+import { ref } from 'vue'
 
 const messages = ref([])
 let messageCounter = 0
 
-// --- WebSocket Setup ---
-const API_BASE = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/+$/, '')
-const WS_API_BASE = (import.meta.env.VITE_WS_API_URL || '').replace(/\/+$/, '')
-
-let wsUrl = WS_API_BASE.replace(/^http/, 'ws')
-if (!wsUrl || wsUrl.startsWith('/')) {
-  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-  const host = window.location.host
-  wsUrl = `${protocol}//${host}${API_BASE}`
-}
-
-const fullWsUrl = `${wsUrl}/ws/${props.projectId}`
-
-const { data, close } = useWebSocket(fullWsUrl, {
-  autoReconnect: {
-    retries: -1,
-    delay: 1000,
-  },
-  heartbeat: {
-    message: JSON.stringify({ type: 'ping' }),
-    interval: 30000,
-    pongTimeout: 10000,
-  },
-})
-
-watch(data, (newData) => {
-  if (!newData) return
-  try {
-    const msg = JSON.parse(newData)
-    // Look for metadata with user_id and image_id on any event
-    if (msg.metadata && msg.metadata.user_id && msg.metadata.image_id) {
-      addMessage(msg.metadata.user_id, msg.metadata.image_id)
-    }
-  } catch (e) {
-    console.error('[UpdateFeed] Error parsing message:', e)
-  }
-})
-
 function addMessage(userId, imageId) {
+  console.log(`[UpdateFeed] Adding message: ${userId} - ${imageId}`)
+  
   const id = ++messageCounter
   const message = {
     id,
@@ -85,8 +41,9 @@ function removeMessage(id) {
   }
 }
 
-onUnmounted(() => {
-  close()
+// Expose method to parent
+defineExpose({
+  addMessage
 })
 </script>
 
@@ -98,7 +55,7 @@ onUnmounted(() => {
   width: 50vw; /* Half of width */
   max-height: 50vh; /* Max half of height */
   background-color: rgba(0, 0, 0, 0.5); /* Black transparent */
-  z-index: 10; /* Same z-index as previous toggle */
+  z-index: 1000; /* Ensure it's above canvas (z-index issues often cause invisibility) */
   border-radius: 12px;
   padding: 10px;
   overflow: hidden;

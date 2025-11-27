@@ -21,13 +21,7 @@
       </div>
     </div>
 
-    <!-- Update Bubble -->
-    <transition name="fade">
-      <div v-if="showUpdateBubble" class="update-bubble">
-        <div class="bubble-icon">✨</div>
-        <div class="bubble-text">{{ updateMessage }}</div>
-      </div>
-    </transition>
+    <!-- Update Bubble REMOVED -->
   </div>
 </template>
 
@@ -123,12 +117,15 @@ export default {
       // Pivot viz
       _pivotMarker: null,
       _pivotAxes: null,
+      
+      // Metadata storage for sync
+      pendingMetadata: null,
 
       // WebSocket
       // websocket: null, // Removed manual websocket
       wsConnected: false,
-      showUpdateBubble: false,
-      updateMessage: '',
+      // showUpdateBubble: false, // Removed internal bubble
+      // updateMessage: '', // Removed internal bubble
       wsHandle: null, // Store the return from useWebSocket
     }
   },
@@ -760,8 +757,16 @@ export default {
         if (newObject.geometry?.boundingBox) this._worldBBox.union(newObject.geometry.boundingBox)
         this._updateClampBBox()
 
-        // Notify UI
-        this.showUpdateNotification("Modelo actualizado")
+        // Notify UI via event
+        // this.showUpdateNotification("Modelo actualizado") // Internal bubble removed
+        if (this.pendingMetadata) {
+           this.$emit('model-updated', this.pendingMetadata)
+           this.pendingMetadata = null
+        } else {
+           // Fallback if no metadata was stored (e.g. initial load or manual reload)
+           this.$emit('model-updated', { user_id: 'System', image_id: 'Update' })
+        }
+        
         console.log('[PLYViewer] Smart reload complete')
 
       } catch (e) {
@@ -942,6 +947,12 @@ export default {
           if (msg.type === 'update' && msg.status === 'updated') {
             const receivedTime = Date.now() / 1000
             console.log(`[PLYViewer] Received update notification at ${receivedTime.toFixed(3)}:`, msg)
+            
+            // Store metadata to emit later upon successful reload
+            if (msg.metadata) {
+              this.pendingMetadata = msg.metadata
+            }
+
             if (msg.timestamp) {
                const latency = receivedTime - msg.timestamp
                console.log(`[PLYViewer] Notification Latency: ${latency.toFixed(3)}s`)
@@ -1013,33 +1024,7 @@ export default {
 .toggles { display: flex; gap: 16px; }
 .coords { margin-top: 6px; opacity: 0.95; font-variant-numeric: tabular-nums; }
 
-/* Update Bubble */
-.update-bubble {
-  position: absolute;
-  bottom: 24px;
-  left: 50%;
-  transform: translateX(-50%);
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 16px;
-  background: rgba(255, 255, 255, 0.15);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-  border: 1px solid rgba(255, 255, 255, 0.2);
-  border-radius: 999px;
-  color: #fff;
-  font-family: system-ui, -apple-system, sans-serif;
-  font-size: 14px;
-  font-weight: 500;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
-  pointer-events: none;
-  z-index: 100;
-}
-
-.bubble-icon {
-  font-size: 16px;
-}
+/* Update Bubble REMOVED */
 
 /* Vue Transitions */
 .fade-enter-active,

@@ -1,14 +1,15 @@
 <template>
   <div class="page">
     <!-- Update Feed (replaces Viewer Toggle) -->
-    <UpdateFeed v-if="projectId" :project-id="projectId" />
+    <UpdateFeed ref="updateFeedRef" v-if="projectId" :project-id="projectId" />
 
     <Suspense>
       <template #default>
         <component 
           :is="AsyncPLYViewer"
           ref="viewerRef" 
-          @loadComplete="onLoadComplete" 
+          @loadComplete="onLoadComplete"
+          @model-updated="onModelUpdated"
         />
       </template>
       <template #fallback>
@@ -58,6 +59,7 @@ import UpdateFeed from '@/components/UpdateFeed.vue'
 const AsyncPLYViewer = defineAsyncComponent(() => import('@/components/PLYViewer.vue'))
 // const AsyncGSplatViewer = defineAsyncComponent(() => import('@/components/GSplatViewer.vue')) // Unused
 const viewerRef = ref(null)
+const updateFeedRef = ref(null)
 const fileInput = ref(null)
 const selectedFile = ref(null)
 const uploading = ref(false)
@@ -94,6 +96,14 @@ function discardFile() {
 function onLoadComplete() {
   uploading.value = false
   reloading.value = false
+}
+
+function onModelUpdated(metadata) {
+  if (updateFeedRef.value) {
+    const userId = metadata.user_id || 'System'
+    const imageId = metadata.image_id || 'Update'
+    updateFeedRef.value.addMessage(userId, imageId)
+  }
 }
 
 async function uploadFile() {
