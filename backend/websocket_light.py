@@ -277,6 +277,7 @@ def process_queue(project_id: str):
     lock_start = time.time()
     reconstruction_state[project_id] = {
         "latest_image_id": image_id, 
+        # "metadata": items,
         "timestamp": time.time(),
         "status": "processing",
         "last_processed_timestamp": current_state.get("last_processed_timestamp", 0) if current_state else 0
@@ -346,7 +347,8 @@ def process_queue(project_id: str):
         # Notify
         event = {
             "type": "update",
-            "image_id": image_id,
+            "metadata": items,
+            # "image_id": image_id,
             "timestamp": ts,
             "status": "updated",
             "last_processed_timestamp": new_folder_mtime,
@@ -375,7 +377,8 @@ def process_queue(project_id: str):
         # Notify Error
         event = {
             "type": "update",
-            "image_id": image_id,
+            # "image_id": image_id,
+            "metadata": items,
             "timestamp": ts,
             "status": "error",
             "error": str(e),

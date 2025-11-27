@@ -47,7 +47,7 @@ vol_mnt_loc = Path("/mnt/volume")
 @modal.concurrent(max_inputs=100)
 @modal.asgi_app()
 def fastapi_app():
-    from fastapi import FastAPI, Response, status, BackgroundTasks
+    from fastapi import FastAPI, Response, status, BackgroundTasks, Form
     from fastapi.responses import JSONResponse, FileResponse
     from PIL import Image
     from fastapi import UploadFile, File, HTTPException
@@ -533,7 +533,7 @@ def fastapi_app():
         return {"scenes": scene_dicts}
     
     @web_app.post("/pointcloud/{id}")
-    async def new_image(id: str, file: UploadFile = File(...), background_tasks: BackgroundTasks = None):
+    async def new_image(id: str, user_id: str = Form(...), file: UploadFile = File(...), background_tasks: BackgroundTasks = None):
         """
         Creates a new image in a scene.
         """
@@ -565,7 +565,7 @@ def fastapi_app():
             # Use UUID for image_id (filename without extension)
             image_id = Path(uploaded).stem
             
-            task = {"project_id": id, "image_id": image_id}
+            task = {"image_id": image_id, "user_id": user_id}
             reconstruction_queue.put(task, partition=id)
             print(f"{Colors.GREEN}✅ Pushed task to queue: {task} (Partition: {id}){Colors.RESET}")
             
@@ -591,10 +591,7 @@ def fastapi_app():
         print(f"{'='*80}\n")
         
         return {"success": True, "message": "Image uploaded and queued for processing"}
-        # return Response(
-        #     content=multipart_data.to_string(),
-        #     media_type=multipart_data.content_type
-        # )
+
 
     @web_app.get("/pointcloud/{pc_id}/{tag}")
     async def get_pointcloud(pc_id: str, tag: str):
@@ -612,33 +609,6 @@ def fastapi_app():
             print(f"{Colors.RED}❌ ERROR: Point cloud file not found at {ply_path}{Colors.RESET}")
             return {"error": "Point cloud file not found."}
 
-        # Load LAST camera pose from predictions file
-        predictions_path = Path(vol_mnt_loc) / "backend_data" / "reconstructions" / pc_id / "predictions.pt"
-        camera_pose = None
-        print(f"{Colors.MAGENTA}   Looking for predictions at: {predictions_path}{Colors.RESET}")
-        
-        if predictions_path.exists():
-            load_start = time.time()
-            try:
-                predictions = torch.load(str(predictions_path), map_location="cpu")
-                camera_poses_tensor = predictions.get("camera_poses")
-                
-                if camera_poses_tensor is not None:
-                    # Extract only the LAST camera pose [batch=0, image=-1]
-                    # Handle batch dimension [1, N, ...] format
-                    if camera_poses_tensor.dim() >= 2 and camera_poses_tensor.shape[0] == 1:
-                        camera_pose = camera_poses_tensor[0][-1].numpy().tolist()
-                    else:
-                        camera_pose = camera_poses_tensor[-1].numpy().tolist()
-                    print(f"{Colors.GREEN}✅ Loaded last camera pose (shape: {camera_poses_tensor.shape}){Colors.RESET}")
-                else:
-                    print(f"{Colors.RED}⚠️  WARNING: No camera_poses found in predictions for {pc_id}{Colors.RESET}")
-                log_time("Load camera pose from predictions", load_start)
-            except Exception as e:
-                print(f"{Colors.RED}⚠️  WARNING: Failed to load camera pose: {e}{Colors.RESET}")
-        else:
-            print(f"{Colors.RED}⚠️  WARNING: predictions.pt not found at {predictions_path}{Colors.RESET}")
-
         # Always serve the latest file on disk
         read_start = time.time()
         with open(ply_path, 'rb') as f:
@@ -651,7 +621,6 @@ def fastapi_app():
         multipart_data = MultipartEncoder(
             fields={
                 'pointcloud': (f"{pc_id}_{tag}.ply", ply_data, 'application/octet-stream'),
-                'camera_pose': json.dumps(camera_pose) if camera_pose is not None else json.dumps(None)
             }
         )
         log_time("Encode multipart response", encode_start)
