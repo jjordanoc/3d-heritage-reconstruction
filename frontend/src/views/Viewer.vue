@@ -1,25 +1,12 @@
 <template>
   <div class="page">
-    <!-- Viewer Toggle -->
-    <div class="viewer-toggle">
-      <button 
-        @click="currentViewerType = 'ply'" 
-        :class="['toggle-btn', { active: currentViewerType === 'ply' }]"
-      >
-        Real-time Viewer
-      </button>
-      <button 
-        @click="currentViewerType = 'gsplat'" 
-        :class="['toggle-btn', { active: currentViewerType === 'gsplat' }]"
-      >
-        Splat Viewer
-      </button>
-    </div>
+    <!-- Update Feed (replaces Viewer Toggle) -->
+    <UpdateFeed v-if="projectId" :project-id="projectId" />
 
     <Suspense>
       <template #default>
         <component 
-          :is="currentViewerType === 'ply' ? AsyncPLYViewer : AsyncGSplatViewer"
+          :is="AsyncPLYViewer"
           ref="viewerRef" 
           @loadComplete="onLoadComplete" 
         />
@@ -64,16 +51,21 @@
 </template>
 
 <script setup>
-import { onMounted, onUnmounted, ref, defineAsyncComponent } from 'vue'
+import { onMounted, onUnmounted, ref, defineAsyncComponent, computed } from 'vue'
+import { useRoute } from 'vue-router'
+import UpdateFeed from '@/components/UpdateFeed.vue'
 
 const AsyncPLYViewer = defineAsyncComponent(() => import('@/components/PLYViewer.vue'))
-const AsyncGSplatViewer = defineAsyncComponent(() => import('@/components/GSplatViewer.vue'))
+// const AsyncGSplatViewer = defineAsyncComponent(() => import('@/components/GSplatViewer.vue')) // Unused
 const viewerRef = ref(null)
 const fileInput = ref(null)
 const selectedFile = ref(null)
 const uploading = ref(false)
 const reloading = ref(false)
-const currentViewerType = ref('ply')
+// const currentViewerType = ref('ply') // Defaulting to PLY, no toggle needed
+
+const route = useRoute()
+const projectId = computed(() => (route.query.id || route.params.id)?.toString())
 
 onMounted(() => {
   document.body.classList.add('no-scroll')
@@ -108,7 +100,7 @@ async function uploadFile() {
   if (!selectedFile.value) return
   uploading.value = true
 
-  const id = viewerRef.value?.$route?.query?.id || viewerRef.value?.$route?.params?.id
+  const id = projectId.value
   if (!id) {
     alert('No se encontró ID del modelo.')
     uploading.value = false
@@ -242,44 +234,5 @@ async function uploadFile() {
 
 @keyframes spin {
   to { transform: rotate(360deg); }
-}
-
-/* Viewer Toggle */
-.viewer-toggle {
-  position: fixed;
-  top: 20px;
-  right: 20px;
-  display: flex;
-  gap: 8px;
-  z-index: 10;
-  background: rgba(10, 12, 18, 0.7);
-  backdrop-filter: blur(4px);
-  border: 1px solid rgba(255,255,255,0.1);
-  border-radius: 12px;
-  padding: 6px;
-}
-
-.toggle-btn {
-  color: #e6e9ef;
-  background: transparent;
-  border: 1px solid transparent;
-  padding: 8px 16px;
-  border-radius: 8px;
-  cursor: pointer;
-  transition: all 0.2s;
-  font-size: 14px;
-  font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
-}
-
-.toggle-btn:hover {
-  background: rgba(124,172,248,0.15);
-  border-color: rgba(124,172,248,0.3);
-}
-
-.toggle-btn.active {
-  background: rgba(124,172,248,0.25);
-  border-color: rgba(124,172,248,0.6);
-  color: #7cacf8;
-  font-weight: 500;
 }
 </style>
