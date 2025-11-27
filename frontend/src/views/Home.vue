@@ -8,20 +8,22 @@
       <div class="hero__bg"></div>
       <div class="hero__content">
         <h1>Reconstrucciones <span>3D</span></h1>
-        <p class="lead">Explora colecciones de reconstrucciones con modelos, nubes de puntos y mallas texturizadas.</p>
+        <p class="lead">
+          Explora colecciones de reconstrucciones 3D con nubes de puntos.
+        </p>
       </div>
     </section>
 
     <!-- CATEGORIES -->
     <section class="categories container">
-      <!-- User Scenes Category -->
-      <div v-if="userScenes.length > 0 || true" class="category">
+      <!-- Sección: Crear nueva escena -->
+      <div class="category">
         <div class="category__head">
-          <h2>Mis Escenas</h2>
+          <h2>Crear Nueva Escena Compartida</h2>
         </div>
 
         <div class="grid">
-          <!-- Add Scene Card -->
+          <!-- Add Scene Card (SOLO aquí) -->
           <article
             class="card add-scene-card"
             tabindex="0"
@@ -31,109 +33,132 @@
           >
             <div class="thumb add-thumb">
               <svg class="plus-icon" viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M12 5v14M5 12h14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                <path
+                  d="M12 5v14M5 12h14"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                />
               </svg>
             </div>
 
             <div class="card__body">
-              <h3 class="card__title">Crear Nueva Escena</h3>
+              <h3 class="card__title">Crear Nueva Escena Compartida</h3>
               <p class="card__sub">Sube imágenes para reconstruir</p>
-            </div>
-          </article>
-
-          <!-- User Scene Cards -->
-          <article
-            v-for="scene in userScenes"
-            :key="scene.id"
-            class="card"
-            tabindex="0"
-          >
-            <div class="thumb">
-              <img
-                :src="scene.img"
-                :alt="scene.title"
-                loading="lazy"
-                decoding="async"
-                @error="onImgError($event)"
-              />
-            </div>
-
-            <div class="card__body">
-              <h3 class="card__title">{{ scene.title }}</h3>
-              <p class="card__sub">{{ scene.subtitle }}</p>
-
-              <router-link
-                class="btn"
-                :to="{ name: 'viewer', query: { id: scene.id } }"
-                :aria-label="`Ver ${scene.title} en el visor`"
-              >
-                <svg class="btn__icon" viewBox="0 0 24 24" aria-hidden="true">
-                  <path d="M5 12h12M13 5l7 7-7 7" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-                </svg>
-                View
-              </router-link>
             </div>
           </article>
         </div>
       </div>
 
-      <!-- Demo Categories -->
-      <!-- <div
-        v-for="cat in categories"
-        :key="cat.key"
-        class="category"
-      >
+      <!-- Sección: Escenas compartidas (3 estados en un solo bloque) -->
+      <div class="category">
         <div class="category__head">
-          <h2>{{ cat.title }}</h2>
-          <div class="pill">Demo</div>
+          <h2>Escenas Compartidas</h2>
         </div>
 
-        <div class="grid">
-          <article
-            v-for="item in cat.items"
-            :key="item.id"
-            class="card"
-            tabindex="0"
-          >
-            <div class="thumb">
-              <img
-                :src="item.img"
-                :alt="item.title"
-                loading="lazy"
-                decoding="async"
-                @error="onImgError($event)"
-              />
-            </div>
-
-            <div class="card__body">
-              <h3 class="card__title">{{ item.title }}</h3>
-              <p class="card__sub">{{ item.subtitle }}</p>
-
-              <router-link
-                class="btn"
-                :to="{ name: 'viewer', query: { id: item.id } }"
-                :aria-label="`Ver ${item.title} en el visor`"
-              >
-                <svg class="btn__icon" viewBox="0 0 24 24" aria-hidden="true">
-                  <path d="M5 12h12M13 5l7 7-7 7" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-                </svg>
-                View
-              </router-link>
+        <!-- Estado: cargando -->
+        <div v-if="isLoadingScenes" class="status-wrapper">
+          <article class="card card--status">
+            <div class="status-icon status-icon--spinner"></div>
+            <div class="status-copy">
+              <p class="status-title">Buscando escenas compartidas…</p>
+              <p class="status-sub">
+                Cargando escenas compartidas. Esto puede tardar unos segundos.
+              </p>
             </div>
           </article>
         </div>
-      </div> -->
+
+        <!-- Estado: con escenas -->
+        <template v-else-if="userScenes.length > 0">
+          <div class="grid">
+            <!-- User Scene Cards -->
+            <article
+              v-for="scene in userScenes"
+              :key="scene.id"
+              class="card"
+              tabindex="0"
+            >
+              <div class="thumb">
+                <img
+                  :src="scene.img"
+                  :alt="scene.title"
+                  loading="lazy"
+                  decoding="async"
+                  @error="onImgError($event)"
+                />
+              </div>
+
+              <div class="card__body">
+                <h3 class="card__title">{{ scene.title }}</h3>
+                <p class="card__sub">{{ scene.subtitle }}</p>
+
+                <router-link
+                  class="btn"
+                  :to="{ name: 'viewer', query: { id: scene.id } }"
+                  :aria-label="`Ver ${scene.title} en el visor`"
+                >
+                  <svg class="btn__icon" viewBox="0 0 24 24" aria-hidden="true">
+                    <path
+                      d="M5 12h12M13 5l7 7-7 7"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="1.5"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                    />
+                  </svg>
+                  View
+                </router-link>
+              </div>
+            </article>
+          </div>
+        </template>
+
+        <!-- Estado: sin escenas -->
+        <div v-else class="status-wrapper">
+          <article class="card card--status card--empty">
+            <div class="status-icon status-icon--ghost">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path
+                  d="M4 18.5V10a8 8 0 0 1 16 0v8.5l-2.2-1.4a2 2 0 0 0-2.2.1L14 19l-1.6-1.2a2 2 0 0 0-2.4 0L8 19l-1.8-1.3a2 2 0 0 0-2.2-.1Z"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.5"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                />
+                <circle cx="10" cy="11" r="1" />
+                <circle cx="14" cy="11" r="1" />
+              </svg>
+            </div>
+            <div class="status-copy">
+              <p class="status-title">Aún no tienes escenas compartidas</p>
+              <p class="status-sub">
+                Crea tu primera escena desde la sección superior
+                <span class="status-sub__hint">“Crear Nueva Escena Compartida”</span>.
+              </p>
+            </div>
+          </article>
+        </div>
+      </div>
     </section>
 
     <!-- Scene Creation Modal -->
-    <SceneModal v-if="showModal" @close="closeModal" @created="handleSceneCreated" />
+    <SceneModal
+      v-if="showModal"
+      @close="closeModal"
+      @created="handleSceneCreated"
+    />
   </div>
 </template>
 
 <script setup>
 import NavBar from '@/components/NavBar.vue'
 import SceneModal from '@/components/SceneModal.vue'
-import { reactive, ref, onMounted } from 'vue'
+import { ref, onMounted } from 'vue'
 
 // API base
 const API_BASE = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/+$/, '')
@@ -144,50 +169,31 @@ const showModal = ref(false)
 // User scenes from backend
 const userScenes = ref([])
 
-// Demo categories (hardcoded)
-// const categories = reactive([
-//   {
-//     key: 'patrimonio',
-//     title: 'Reconstrucciones de Patrimonio',
-//     items: [
-//       { id: 'huaca-pucllana', title: 'Huaca Pucallana', subtitle: 'Miraflores, Lima', img: '/img/patrimonio/pucllana.jpg' },
-//     ],
-//   },
-//   {
-//     key: 'estructuras',
-//     title: 'Reconstrucciones de Estructuras',
-//     items: [
-//       { id: 'puente-a', title: 'Puente A', subtitle: 'Modelo FEM', img: '/img/estructuras/bridge-a.jpg' },
-//     ],
-//   },
-//   {
-//     key: 'entornos',
-//     title: 'Reconstrucciones de Entornos',
-//     items: [
-//       { id: 'auditorio', title: 'Auditorio UTEC', subtitle: 'UTEC, Barranco', img: '/img/entornos/auditorio-utec.jpg' },
-//     ],
-//   },
-// ])
+// Loading state for scenes
+const isLoadingScenes = ref(true)
 
 // Fetch user scenes from backend
 async function fetchUserScenes() {
+  isLoadingScenes.value = true
   try {
     const res = await fetch(`${API_BASE}/scenes`)
     if (!res.ok) throw new Error(`Error ${res.status}`)
-    
+
     const data = await res.json()
-    
+
     // Map backend response to card format
     userScenes.value = (data.scenes || []).map(scene => ({
       id: scene.name,
       title: scene.name,
       subtitle: 'Escena personalizada',
-      img: `data:image/png;base64,${scene.thumbnail}`
+      img: `data:image/png;base64,${scene.thumbnail}`,
     }))
   } catch (err) {
     console.error('Failed to fetch user scenes:', err)
     // Silent fail - just show empty user scenes
     userScenes.value = []
+  } finally {
+    isLoadingScenes.value = false
   }
 }
 
@@ -269,13 +275,23 @@ function onImgError(e) {
   inset: -2px;
   filter: blur(40px);
   background:
-    radial-gradient(1200px 400px at 10% -10%, rgba(124,172,248,.25), transparent 60%),
-    radial-gradient(1000px 500px at 90% -20%, rgba(155,140,242,.20), transparent 60%),
-    linear-gradient(180deg, rgba(255,255,255,.9), #ffffff);
+    radial-gradient(
+      1200px 400px at 10% -10%,
+      rgba(124, 172, 248, 0.25),
+      transparent 60%
+    ),
+    radial-gradient(
+      1000px 500px at 90% -20%,
+      rgba(155, 140, 242, 0.2),
+      transparent 60%
+    ),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.9), #ffffff);
   animation: float 12s ease-in-out infinite alternate;
 }
 @keyframes float {
-  to { transform: translateY(-12px); }
+  to {
+    transform: translateY(-12px);
+  }
 }
 .hero__content {
   position: relative;
@@ -330,7 +346,11 @@ function onImgError(e) {
   border: 1px solid var(--accent);
   padding: 4px 8px;
   border-radius: 999px;
-  background: linear-gradient(180deg, rgba(124,172,248,.12), rgba(124,172,248,.05));
+  background: linear-gradient(
+    180deg,
+    rgba(124, 172, 248, 0.12),
+    rgba(124, 172, 248, 0.05)
+  );
 }
 
 /* ====== Grid & Cards ====== */
@@ -343,8 +363,16 @@ function onImgError(e) {
 /* Cards SIEMPRE claras, como el modal */
 .card {
   background:
-    radial-gradient(140% 160% at 0% 0%, rgba(124, 172, 248, 0.22), transparent 55%),
-    radial-gradient(140% 160% at 100% 0%, rgba(155, 140, 242, 0.20), transparent 55%),
+    radial-gradient(
+      140% 160% at 0% 0%,
+      rgba(124, 172, 248, 0.22),
+      transparent 55%
+    ),
+    radial-gradient(
+      140% 160% at 100% 0%,
+      rgba(155, 140, 242, 0.2),
+      transparent 55%
+    ),
     linear-gradient(180deg, #f9fafb, #ffffff);
   border: 1px solid rgba(148, 163, 184, 0.28);
   border-radius: 18px;
@@ -353,10 +381,10 @@ function onImgError(e) {
   backdrop-filter: blur(10px) saturate(150%);
   transform: translateZ(0);
   transition:
-    transform .25s ease,
-    box-shadow .25s ease,
-    border-color .25s ease,
-    background .25s ease;
+    transform 0.25s ease,
+    box-shadow 0.25s ease,
+    border-color 0.25s ease,
+    background 0.25s ease;
   will-change: transform;
 }
 
@@ -372,8 +400,7 @@ function onImgError(e) {
   display: flex;
   align-items: center;
   justify-content: center;
-  background:
-    linear-gradient(180deg, rgba(255,255,255,0.9), #f3f4ff);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.9), #f3f4ff);
   aspect-ratio: 1 / 1;
   min-height: 200px; /* asegura que no sea muy chica en desktop */
 }
@@ -423,18 +450,22 @@ function onImgError(e) {
   border-radius: 12px;
   text-decoration: none;
   color: #0f172a;
-  background:
-    linear-gradient(180deg, rgba(255,255,255,0.95), rgba(248,250,252,0.9));
-  border: 1px solid rgba(148,163,184,0.45);
+  background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.95),
+    rgba(248, 250, 252, 0.9)
+  );
+  border: 1px solid rgba(148, 163, 184, 0.45);
   outline: none;
   transition:
-    transform .18s ease,
-    background .2s ease,
-    border-color .2s ease,
-    box-shadow .2s ease;
+    transform 0.18s ease,
+    background 0.2s ease,
+    border-color 0.2s ease,
+    box-shadow 0.2s ease;
 }
 .btn__icon {
-  width: 18px; height: 18px;
+  width: 18px;
+  height: 18px;
 }
 .btn:hover,
 .btn:focus-visible {
@@ -450,8 +481,16 @@ function onImgError(e) {
   border-width: 2px;
   border-color: rgba(148, 163, 184, 0.5);
   background:
-    radial-gradient(140% 160% at 0% 0%, rgba(124, 172, 248, 0.16), transparent 55%),
-    radial-gradient(140% 160% at 100% 0%, rgba(155, 140, 242, 0.16), transparent 55%),
+    radial-gradient(
+      140% 160% at 0% 0%,
+      rgba(124, 172, 248, 0.16),
+      transparent 55%
+    ),
+    radial-gradient(
+      140% 160% at 100% 0%,
+      rgba(155, 140, 242, 0.16),
+      transparent 55%
+    ),
     linear-gradient(180deg, #f9fafb, #ffffff);
 }
 
@@ -489,12 +528,94 @@ function onImgError(e) {
   color: #0f172a;
 }
 
+/* ====== Estados (loading / empty) ====== */
+.status-wrapper {
+  max-width: 480px;
+}
+
+.card--status {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 12px 14px 13px;
+}
+
+.status-icon {
+  flex-shrink: 0;
+  width: 34px;
+  height: 34px;
+  border-radius: 999px;
+  display: grid;
+  place-items: center;
+  background: radial-gradient(
+      circle at 0% 0%,
+      rgba(124, 172, 248, 0.35),
+      transparent 60%
+    ),
+    radial-gradient(
+      circle at 100% 100%,
+      rgba(155, 140, 242, 0.35),
+      transparent 60%
+    );
+  border: 1px solid rgba(148, 163, 184, 0.6);
+}
+
+/* Spinner animado para "cargando" */
+.status-icon--spinner {
+  border-radius: 999px;
+  border: 2px solid rgba(148, 163, 184, 0.4);
+  border-top-color: var(--accent);
+  border-right-color: var(--accent-2);
+  background: transparent;
+  animation: spin 0.9s linear infinite;
+}
+
+/* Icono para vacío */
+.status-icon--ghost svg {
+  width: 20px;
+  height: 20px;
+  color: #4b5563;
+}
+
+/* Texto dentro del status card */
+.status-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.status-title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: #0f172a;
+}
+
+.status-sub {
+  margin: 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.status-sub__hint {
+  font-weight: 500;
+  color: var(--accent);
+}
+
+/* Spin animation */
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 /* ====== Motion preferences ====== */
 @media (prefers-reduced-motion: reduce) {
   .hero__bg,
   .card,
   .btn,
-  .plus-icon {
+  .plus-icon,
+  .status-icon--spinner {
     transition: none;
     animation: none;
   }
