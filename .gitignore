@@ -10,4 +10,6 @@ models/
 
 .venv/
 
+**/venv/
+
 node_modules

@@ -9,6 +9,7 @@
   },
   "dependencies": {
     "@sparkjsdev/spark": "^0.1.10",
+    "@vueuse/core": "^14.0.0",
     "three": "^0.180.0",
     "vue": "^3.4.0",
     "vue-router": "^4.6.3"

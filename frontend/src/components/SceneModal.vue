@@ -1,55 +1,127 @@
+<!-- src/components/SceneModal.vue -->
 <template>
-  <div class="modal-overlay" @click.self="$emit('close')">
-    <div class="modal-card">
-      <h2>Nueva Escena</h2>
-      
-      <form @submit.prevent="handleSubmit">
-        <div class="form-group">
-          <label for="sceneName">Nombre de la escena</label>
-          <input
-            id="sceneName"
-            v-model="sceneName"
-            type="text"
-            placeholder="ej: mi-proyecto"
-            required
-            :disabled="isSubmitting"
-          />
-          <p class="hint">Se usará como identificador único</p>
-        </div>
+  <div class="modal-backdrop" @click.self="handleClose">
+    <div class="modal-sheet">
+      <header class="modal-header">
+        <h2 class="modal-title">Nueva Escena</h2>
+        <button
+          type="button"
+          class="icon-btn"
+          @click="handleClose"
+          aria-label="Cerrar"
+        >
+          ✕
+        </button>
+      </header>
 
-        <div class="form-group">
-          <label for="thumbnail">Imagen miniatura</label>
+      <form class="modal-body" @submit.prevent="handleSubmit">
+        <!-- Nombre de la escena -->
+        <label class="field">
+          <span class="field-label">Nombre de la escena</span>
           <input
-            id="thumbnail"
-            ref="fileInputRef"
-            type="file"
-            accept="image/*"
+            v-model="sceneName"
+            class="field-input"
+            type="text"
             required
-            :disabled="isSubmitting"
+            placeholder="ej: mi-proyecto"
+          />
+          <span class="field-hint">
+            Se usará como identificador único.
+          </span>
+        </label>
+
+        <!-- Imagen miniatura (OPCIONAL) -->
+        <div class="field">
+          <div class="field-header">
+            <span class="field-label">Imagen miniatura</span>
+            <button
+              type="button"
+              class="link-btn"
+              @click="toggleThumbnail"
+            >
+              {{ showThumbnail
+                ? 'Quitar miniatura'
+                : 'Añadir miniatura (opcional)' }}
+            </button>
+          </div>
+
+          <!-- input nativo escondido -->
+          <input
+            ref="fileInput"
+            type="file"
+            class="file-input-native"
+            accept="image/*"
             @change="onFileChange"
           />
-          <p v-if="selectedFileName" class="file-name">{{ selectedFileName }}</p>
+
+          <!-- Dropzone solo si el usuario activó la miniatura -->
+          <div
+            v-if="showThumbnail"
+            class="dropzone"
+            :class="{ 'dropzone--filled': !!previewUrl }"
+            @click="triggerFileInput"
+          >
+            <div class="dropzone-main">
+              <div v-if="previewUrl" class="dropzone-preview">
+                <img :src="previewUrl" alt="Previsualización miniatura" />
+              </div>
+
+              <div class="dropzone-text">
+                <span class="dropzone-title">
+                  {{ previewUrl ? 'Cambiar imagen' : 'Haz clic para seleccionar una imagen' }}
+                </span>
+                <span class="dropzone-subtitle">
+                  Se reescalará automáticamente a 256 × 256 píxeles
+                </span>
+              </div>
+            </div>
+
+            <!-- Tacho a la derecha -->
+            <button
+              v-if="previewUrl"
+              type="button"
+              class="preview-clear-btn"
+              @click.stop="clearImage"
+              aria-label="Quitar imagen seleccionada"
+            >
+              <svg
+                class="trash-icon"
+                viewBox="0 0 20 20"
+                aria-hidden="true"
+              >
+                <path
+                  d="M7.5 4.5h5a.75.75 0 0 1 .74.62l.26 1.63h2.25a.75.75 0 0 1 0 1.5h-.63l-.56 7.03A1.75 1.75 0 0 1 12.82 17H7.18a1.75 1.75 0 0 1-1.74-1.72L4.88 8.25h-.63a.75.75 0 0 1 0-1.5H6.5l.26-1.63a.75.75 0 0 1 .74-.62Zm.27 3.75a.75.75 0 0 0-1.5.06l.25 5a.75.75 0 1 0 1.5-.06l-.25-5Zm2.73.06a.75.75 0 0 0-1.5 0v5a.75.75 0 0 0 1.5 0v-5Zm2.48-.06a.75.75 0 0 0-1.5-.06l-.25 5a.75.75 0 0 0 1.5.06l.25-5ZM8.25 3a1 1 0 0 1 1-1h1.5a1 1 0 0 1 1 1v.5h-3.5V3Z"
+                  fill="currentColor"
+                />
+              </svg>
+            </button>
+          </div>
         </div>
 
-        <p v-if="errorMessage" class="error">{{ errorMessage }}</p>
+        <!-- Error -->
+        <p v-if="errorMessage" class="error-msg">
+          {{ errorMessage }}
+        </p>
 
-        <div class="button-group">
+        <!-- Footer -->
+        <footer class="modal-footer">
           <button
             type="button"
-            class="btn secondary"
+            class="btn btn-ghost"
+            @click="handleClose"
             :disabled="isSubmitting"
-            @click="$emit('close')"
           >
             Cancelar
           </button>
           <button
             type="submit"
-            class="btn primary"
-            :disabled="isSubmitting || !sceneName || !thumbnailFile"
+            class="btn"
+            :disabled="isSubmitting || !sceneName"
           >
-            {{ isSubmitting ? 'Creando...' : 'Crear' }}
+            <span v-if="!isSubmitting">Crear</span>
+            <span v-else>Creando…</span>
           </button>
-        </div>
+        </footer>
       </form>
     </div>
   </div>
@@ -57,61 +129,143 @@
 
 <script setup>
 import { ref } from 'vue'
-import { useRouter } from 'vue-router'
 
 const emit = defineEmits(['close', 'created'])
-const router = useRouter()
 
-const sceneName = ref('')
-const thumbnailFile = ref(null)
-const selectedFileName = ref('')
-const isSubmitting = ref(false)
-const errorMessage = ref('')
-const fileInputRef = ref(null)
-
-// API base
 const API_BASE = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/+$/, '')
 
-function onFileChange(e) {
-  const file = e.target.files?.[0]
-  if (file) {
-    thumbnailFile.value = file
-    selectedFileName.value = file.name
-  } else {
-    thumbnailFile.value = null
-    selectedFileName.value = ''
+const sceneName = ref('')
+const file = ref(null)
+const previewUrl = ref('')
+const isSubmitting = ref(false)
+const errorMessage = ref('')
+
+const fileInput = ref(null)
+const showThumbnail = ref(false)
+
+async function resizeImageTo256(inputFile) {
+  const SIZE = 256
+
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+
+    reader.onload = (ev) => {
+      const img = new Image()
+      img.onload = () => {
+        const canvas = document.createElement('canvas')
+        canvas.width = SIZE
+        canvas.height = SIZE
+        const ctx = canvas.getContext('2d')
+
+        if (!ctx) {
+          reject(new Error('No se pudo obtener el contexto 2D del canvas'))
+          return
+        }
+
+        const ratio = Math.min(SIZE / img.width, SIZE / img.height)
+        const newWidth = img.width * ratio
+        const newHeight = img.height * ratio
+        const dx = (SIZE - newWidth) / 2
+        const dy = (SIZE - newHeight) / 2
+
+        ctx.clearRect(0, 0, SIZE, SIZE)
+        ctx.drawImage(img, dx, dy, newWidth, newHeight)
+
+        canvas.toBlob(
+          (blob) => {
+            if (!blob) {
+              reject(new Error('No se pudo generar el blob de la imagen'))
+              return
+            }
+
+            const resizedFile = new File(
+              [blob],
+              inputFile.name.replace(/\.\w+$/, '.png'),
+              { type: 'image/png' }
+            )
+
+            resolve(resizedFile)
+          },
+          'image/png',
+          0.95
+        )
+      }
+
+      img.onerror = (err) => reject(err)
+      img.src = ev.target?.result
+    }
+
+    reader.onerror = (err) => reject(err)
+    reader.readAsDataURL(inputFile)
+  })
+}
+
+function handleClose() {
+  if (isSubmitting.value) return
+  emit('close')
+}
+
+function toggleThumbnail() {
+  showThumbnail.value = !showThumbnail.value
+  if (!showThumbnail.value) {
+    clearImage()
+  }
+}
+
+function triggerFileInput() {
+  fileInput.value?.click()
+}
+
+function onFileChange(event) {
+  const selected = event.target.files?.[0]
+  if (!selected) return
+
+  file.value = selected
+
+  if (previewUrl.value) URL.revokeObjectURL(previewUrl.value)
+  previewUrl.value = URL.createObjectURL(selected)
+}
+
+function clearImage() {
+  file.value = null
+  if (previewUrl.value) {
+    URL.revokeObjectURL(previewUrl.value)
+  }
+  previewUrl.value = ''
+  if (fileInput.value) {
+    fileInput.value.value = ''
   }
 }
 
 async function handleSubmit() {
-  if (!sceneName.value || !thumbnailFile.value) return
-  
-  errorMessage.value = ''
+  if (!sceneName.value) return
+
   isSubmitting.value = true
+  errorMessage.value = ''
 
   try {
     const formData = new FormData()
-    formData.append('thumbnail', thumbnailFile.value)
+    formData.append('name', sceneName.value)
 
-    const res = await fetch(`${API_BASE}/scene/${encodeURIComponent(sceneName.value)}`, {
+    if (file.value) {
+      const resized = await resizeImageTo256(file.value)
+      formData.append('thumbnail', resized, resized.name)
+    }
+
+    const res = await fetch(`${API_BASE}/scenes`, {
       method: 'POST',
       body: formData,
     })
 
     if (!res.ok) {
-      const error = await res.json().catch(() => ({ detail: 'Error desconocido' }))
-      throw new Error(error.detail || `Error ${res.status}`)
+      throw new Error(`Error HTTP ${res.status}`)
     }
 
-    // Success - emit event and navigate
     emit('created', sceneName.value)
     emit('close')
-    
-    // Navigate to viewer for the new scene
-    router.push({ name: 'viewer', query: { id: sceneName.value } })
   } catch (err) {
-    console.error('Error creating scene:', err)
-    errorMessage.value = err.message || 'Error al crear la escena. Intenta de nuevo.'
+    console.error('Error creando escena:', err)
+    errorMessage.value = 'No se pudo crear la escena. Inténtalo nuevamente.'
   } finally {
     isSubmitting.value = false
   }
@@ -119,172 +273,319 @@ async function handleSubmit() {
 </script>
 
 <style scoped>
-/* Theme tokens matching Home.vue */
 :root {
-  --bg: #0b0d12;
-  --bg-soft: #0f131a;
-  --card: rgba(255,255,255,0.06);
-  --card-stroke: rgba(255,255,255,0.12);
-  --text: #e6e9ef;
-  --muted: #9aa4b2;
   --accent: #7cacf8;
-  --ring: rgba(124,172,248,0.45);
+  --accent-2: #9b8cf2;
+  --muted: #6b7280;
+  --border-soft: rgba(148, 163, 184, 0.5);
 }
 
-@media (prefers-color-scheme: light) {
-  :root {
-    --bg: #ffffff;
-    --bg-soft: #fbfdff;
-    --card: rgba(16,24,40,0.04);
-    --card-stroke: rgba(16,24,40,0.08);
-    --text: #0f172a;
-    --muted: #475569;
-    --accent: #2563eb;
-    --ring: rgba(37,99,235,.25);
+/* BACKDROP: centrado SIEMPRE, sin scroll interno */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  min-height: 100vh;
+  background: rgba(15, 23, 42, 0.25);
+  backdrop-filter: blur(16px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  z-index: 50;
+}
+
+/* Tarjeta: altura limitada a ~560px -> no necesita scroll en pantallas normales */
+.modal-sheet {
+  width: min(640px, 100% - 32px);
+  max-height: 560px; /* contenido real cabe de sobra */
+  border-radius: 22px;
+  background:
+    radial-gradient(120% 140% at 0% 0%, rgba(124, 172, 248, 0.35), transparent 55%),
+    radial-gradient(110% 140% at 100% 0%, rgba(155, 140, 242, 0.3), transparent 55%),
+    linear-gradient(180deg, #f9fafb, #ffffff);
+  border: 1px solid var(--border-soft);
+  box-shadow: 0 26px 80px rgba(15, 23, 42, 0.30);
+  color: #020617;
+  padding: 22px 26px 18px;
+}
+
+/* Un poco más compacto en pantallas pequeñas */
+@media (max-width: 640px) {
+  .modal-sheet {
+    width: min(520px, 100% - 24px);
+    padding: 18px 18px 14px;
+    border-radius: 18px;
   }
 }
 
-.modal-overlay {
-  position: fixed;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.6);
-  backdrop-filter: blur(8px);
-  display: grid;
-  place-items: center;
-  z-index: 1000;
-  padding: 20px;
+/* HEADER */
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
 }
 
-.modal-card {
-  background: var(--card);
-  border: 1px solid var(--card-stroke);
-  border-radius: 16px;
-  padding: 24px;
-  width: min(500px, 100%);
-  backdrop-filter: saturate(140%) blur(10px);
-  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.4);
-}
-
-.modal-card h2 {
-  margin: 0 0 20px;
-  color: var(--text);
-  font-size: 24px;
+.modal-title {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 600;
   letter-spacing: -0.01em;
 }
 
-form {
-  display: flex;
-  flex-direction: column;
-  gap: 18px;
+/* Botón cerrar */
+.icon-btn {
+  border: none;
+  background: transparent;
+  color: #9ca3af;
+  border-radius: 999px;
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  font-size: 15px;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, transform 0.15s ease;
 }
 
-.form-group {
-  display: flex;
-  flex-direction: column;
+.icon-btn:hover {
+  background: rgba(148, 163, 184, 0.2);
+  color: #111827;
+  transform: translateY(-1px);
+}
+
+/* BODY – SIN max-height, SIN overflow -> no scroll interno */
+.modal-body {
+  display: grid;
+  gap: 14px;
+}
+
+/* FIELDS */
+.field {
+  display: grid;
   gap: 6px;
 }
 
-label {
-  color: var(--text);
+.field-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.field-label {
   font-size: 14px;
   font-weight: 500;
 }
 
-input[type="text"],
-input[type="file"] {
-  padding: 10px 12px;
-  background: rgba(255, 255, 255, 0.05);
-  border: 1px solid var(--card-stroke);
-  border-radius: 8px;
-  color: var(--text);
+.field-input {
+  width: 90%;
+  border-radius: 999px;
+  border: 1px solid rgba(148, 163, 184, 0.6);
+  background: #f9fafb;
+  padding: 9px 14px;
+  color: inherit;
   font-size: 14px;
-  font-family: inherit;
-  transition: border-color 0.2s, background 0.2s;
-}
-
-input[type="text"]:focus {
   outline: none;
-  border-color: var(--accent);
-  background: rgba(255, 255, 255, 0.08);
+  transition: border-color 0.18s ease, box-shadow 0.18s ease, background 0.18s ease, transform 0.18s ease;
 }
 
-input[type="text"]:disabled,
-input[type="file"]:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
+.field-input::placeholder {
+  color: #9ca3af;
 }
 
-input[type="file"] {
-  cursor: pointer;
+.field-input:focus-visible {
+  border-color: rgba(37, 99, 235, 0.75);
+  box-shadow: 0 0 0 1px rgba(37, 99, 235, 0.55);
+  background: #ffffff;
+  transform: translateY(-1px);
 }
 
-.hint,
-.file-name {
-  margin: 0;
-  font-size: 12px;
+.field-hint {
+  font-size: 11px;
   color: var(--muted);
 }
 
-.file-name {
+/* LINK OPCIONAL */
+.link-btn {
+  border: none;
+  background: none;
+  padding: 0;
+  margin: 0;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--accent);
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+/* FILE INPUT NATIVO OCULTO */
+.file-input-native {
+  display: none;
+}
+
+/* Dropzone */
+.dropzone {
+  border-radius: 16px;
+  border: 1px dashed rgba(148, 163, 184, 0.9);
+  background: #f3f4f6;
+  padding: 10px 12px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+  transition:
+    border-color 0.18s ease,
+    background 0.18s ease,
+    box-shadow 0.18s ease,
+    transform 0.18s ease;
+}
+
+.dropzone-main {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.dropzone--filled {
+  border-style: solid;
+  background: #eef2ff;
+}
+
+.dropzone:hover {
+  border-color: rgba(124, 172, 248, 0.9);
+  background: #e5f3ff;
+  box-shadow: 0 12px 32px rgba(15, 23, 42, 0.18);
+  transform: translateY(-1px);
+}
+
+/* Preview */
+.dropzone-preview {
+  width: 64px;
+  height: 64px;
+  border-radius: 16px;
+  overflow: hidden;
+  border: 1px solid rgba(148, 163, 184, 0.7);
+  flex-shrink: 0;
+  background: #e5e7eb;
+}
+
+.dropzone-preview img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+/* Botón tacho a la derecha del dropzone */
+.preview-clear-btn {
+  margin-left: auto;
+  width: 30px;
+  height: 30px;
+  border-radius: 999px;
+  border: none;
+  background: #0f172a;
+  color: #f9fafb;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  box-shadow: 0 4px 10px rgba(15, 23, 42, 0.5);
+  transition: transform 0.15s ease, background 0.15s ease, box-shadow 0.15s ease;
+}
+
+.preview-clear-btn:hover {
+  transform: translateY(-1px);
+  background: #dc2626;
+  box-shadow: 0 6px 16px rgba(127, 29, 29, 0.55);
+}
+
+.trash-icon {
+  width: 15px;
+  height: 15px;
+}
+
+.dropzone-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.dropzone-title {
+  font-size: 13px;
   font-weight: 500;
 }
 
-.error {
-  margin: 0;
-  padding: 10px;
-  background: rgba(239, 68, 68, 0.15);
-  border: 1px solid rgba(239, 68, 68, 0.4);
-  border-radius: 8px;
-  color: #ef4444;
-  font-size: 14px;
+.dropzone-subtitle {
+  font-size: 11px;
+  color: var(--muted);
 }
 
-.button-group {
+/* ERROR */
+.error-msg {
+  margin: 2px 0 0;
+  font-size: 12px;
+  color: #b91c1c;
+}
+
+/* FOOTER */
+.modal-footer {
   display: flex;
+  justify-content: flex-end;
   gap: 10px;
   margin-top: 6px;
 }
 
+/* BOTONES */
 .btn {
-  flex: 1;
-  padding: 10px 16px;
-  border: 1px solid var(--card-stroke);
-  border-radius: 8px;
-  font-size: 14px;
+  border-radius: 999px;
+  border: 1px solid rgba(148, 163, 184, 0.7);
+  padding: 8px 18px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.9), rgba(255, 255, 255, 0.7));
+  color: #111827;
+  font-size: 13px;
   font-weight: 500;
-  font-family: inherit;
   cursor: pointer;
-  transition: all 0.2s;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  outline: none;
+  transition: transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease, background 0.15s ease, opacity 0.15s ease;
 }
 
-.btn.secondary {
-  background: rgba(255, 255, 255, 0.05);
-  color: var(--text);
-}
-
-.btn.secondary:hover:not(:disabled) {
-  background: rgba(255, 255, 255, 0.1);
-}
-
-.btn.primary {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: white;
-}
-
-.btn.primary:hover:not(:disabled) {
-  background: #6399e5;
+.btn:hover:not(:disabled),
+.btn:focus-visible:not(:disabled) {
+  border-color: rgba(37, 99, 235, 0.75);
+  box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.28);
   transform: translateY(-1px);
 }
 
 .btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
+  opacity: 0.55;
+  cursor: default;
+  box-shadow: none;
 }
 
+/* Botón fantasma */
+.btn.btn-ghost {
+  background: #e5e7eb;
+}
+
+.btn.btn-ghost:hover:not(:disabled),
+.btn.btn-ghost:focus-visible:not(:disabled) {
+  background: #d1d5db;
+}
+
+/* Motion */
 @media (prefers-reduced-motion: reduce) {
+  .modal-sheet,
   .btn,
-  input { transition: none; }
+  .icon-btn,
+  .dropzone,
+  .preview-clear-btn {
+    transition: none;
+  }
 }
 </style>
-
