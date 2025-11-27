@@ -367,21 +367,34 @@ function onImgError(e) {
   box-shadow: 0 20px 50px rgba(15, 23, 42, 0.16);
 }
 
-/* Área de imagen cuadrada (≈200×200, responsivo) */
+/* Área de imagen cuadrada: la foto escala con el cuadrado */
 .thumb {
-  display: grid;
-  place-items: center;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   background:
     linear-gradient(180deg, rgba(255,255,255,0.9), #f3f4ff);
   aspect-ratio: 1 / 1;
-  min-height: 200px;
+  min-height: 200px; /* asegura que no sea muy chica en desktop */
 }
+
+/* La imagen ocupa un % del lado del cuadrado */
 .thumb img {
-  width: clamp(180px, 20vw, 220px);
-  height: clamp(180px, 20vw, 220px);
+  width: 72%;
+  height: 72%;
+  max-width: 400px;
+  max-height: 400px;
   object-fit: cover;
   border-radius: 14px;
   box-shadow: 0 8px 20px rgba(15, 23, 42, 0.18);
+}
+
+/* En mobile la hacemos aún más grande dentro del cuadrado */
+@media (max-width: 768px) {
+  .thumb img {
+    width: 90%;
+    height: 90%;
+  }
 }
 
 /* Cuerpo de la card */
