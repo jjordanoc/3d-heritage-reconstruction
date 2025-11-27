@@ -471,22 +471,6 @@ def fastapi_app():
         user_id = str(uuid.uuid4())
         await manager.connect(project_id, user_id, websocket)
         print(f"Connected to {project_id} with UUID {user_id}")
-        
-        # Initial Sync
-        # try:
-        #     state = await reconstruction_state.get.aio(project_id)
-        #     if state:
-        #         msg = {
-        #             "type": "update",
-        #             "image_id": state.get("latest_image_id"),
-        #             "timestamp": state.get("timestamp"),
-        #             "status": state.get("status")
-        #         }
-        #         if state.get("status") == "error":
-        #             msg["error"] = state.get("error")
-        #         await websocket.send_json(msg)
-        # except Exception:
-        #     pass
 
         try:
             while True:
