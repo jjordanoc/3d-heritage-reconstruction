@@ -639,20 +639,20 @@ def fastapi_app():
     @web_app.get("/splat/{id}")
     async def get_splat_model(id: str):
         """
-        Download the trained .ply file.
+        Download the trained .spz file.
         
         Args:
             id: Scene ID
         
         Returns:
-            FileResponse with results.ply
+            FileResponse with results.spz
         """
         endpoint_start = time.time()
         print(f"\n{'='*80}")
         print(f"{Colors.CYAN}📥 [GET /splat/{id}] ENDPOINT CALLED{Colors.RESET}")
         print(f"{'='*80}\n")
         
-        results_ply = Path(vol_mnt_loc) / "backend_data" / "reconstructions" / id / "splats" / "splat.ply"
+        results_ply = Path(vol_mnt_loc) / "backend_data" / "reconstructions" / id / "splats" / "splat.spz"
         
         if not results_ply.exists():
             print(f"{Colors.RED}❌ ERROR: Model file not found at {results_ply}{Colors.RESET}")
@@ -667,7 +667,7 @@ def fastapi_app():
         
         return FileResponse(
             path=results_ply,
-            filename=f"{id}_splat.ply",
+            filename=f"{id}_splat.spz",
             media_type="application/octet-stream"
         )
 
