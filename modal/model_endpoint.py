@@ -70,6 +70,8 @@ class ModelInference:
         import glob
         import torch
         
+        # ensure latest changes are fetched from volume!
+        volume.reload()
         
         # Generate unique ID for this prediction
         pred_uuid = str(uuid.uuid4())
@@ -111,7 +113,7 @@ class ModelInference:
         predictions['conf'][edge] = 0.0
         del predictions['local_points']
 
-        print("Camera")
+        # print("Camera")
         
         # Much simpler and fast enough
         predictions_path = output_dir / "predictions.pt"

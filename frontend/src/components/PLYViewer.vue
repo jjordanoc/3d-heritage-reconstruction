@@ -20,6 +20,8 @@
         </div>
       </div>
     </div>
+
+    <!-- Update Bubble REMOVED -->
   </div>
 </template>
 
@@ -27,8 +29,12 @@
 import * as THREE from 'three'
 import { ArcballControls } from 'three/examples/jsm/controls/ArcballControls.js'
 import { PLYLoader } from 'three/examples/jsm/loaders/PLYLoader.js'
+import { useWebSocket } from '@vueuse/core'
+import { watch } from 'vue'
 
 const API_BASE = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/+$/, '')
+const WS_API_BASE = (import.meta.env.VITE_WS_API_URL || '').replace(/\/+$/, '')
+
 
 function base64ToArrayBuffer(b64) {
   const comma = b64.indexOf(',')
@@ -88,6 +94,7 @@ export default {
 
       _pickables: [],
       _currentObject: null,
+      _fadingObjects: [],
 
       // Helpers
       _axes: null,
@@ -110,6 +117,16 @@ export default {
       // Pivot viz
       _pivotMarker: null,
       _pivotAxes: null,
+      
+      // Metadata storage for sync
+      pendingMetadata: null,
+
+      // WebSocket
+      // websocket: null, // Removed manual websocket
+      wsConnected: false,
+      // showUpdateBubble: false, // Removed internal bubble
+      // updateMessage: '', // Removed internal bubble
+      wsHandle: null, // Store the return from useWebSocket
     }
   },
 
@@ -260,13 +277,19 @@ export default {
 
     // --- Cargar dato por ID desde la ruta ---
     const id = this.$route?.query?.id ?? this.$route?.params?.id
-    if (id) this.loadById(String(id)).catch(console.error)
+    if (id) {
+      this.loadById(String(id)).catch(console.error)
+      this.initWebSocket(String(id))
+    }
     else console.warn('[PLYViewer] No id in route (query/params).')
 
     // Watch cambios de id
     this.$watch(() => this.$route?.fullPath, () => {
       const newId = this.$route?.query?.id ?? this.$route?.params?.id
-      if (newId) this.loadById(String(newId)).catch(console.error)
+      if (newId) {
+        this.loadById(String(newId)).catch(console.error)
+        this.initWebSocket(String(newId))
+      }
     })
 
     // --- Limpieza ---
@@ -281,6 +304,13 @@ export default {
       this._disposePivotViz()
       orbit.dispose?.()
       renderer.dispose?.()
+      
+      // Clean up useWebSocket
+      if (this.wsHandle) {
+        this.wsHandle.close()
+        this.wsHandle = null
+      }
+      
       if (container.contains(renderer.domElement)) container.removeChild(renderer.domElement)
     }
   },
@@ -288,7 +318,15 @@ export default {
   beforeUnmount() { this._cleanup && this._cleanup() },
 
   methods: {
-    async loadById(id) {
+    async loadById(id, preserveCamera = false) {
+      // Save current camera state if preserving
+      let savedCameraPos = null
+      let savedCameraTarget = null
+      if (preserveCamera && this._camera && this._orbit) {
+        savedCameraPos = this._camera.position.clone()
+        savedCameraTarget = this._orbit.target.clone()
+      }
+
       const base = API_BASE
       const url = `${base}/pointcloud/${encodeURIComponent(id)}/latest`
       const res = await fetch(url)
@@ -382,7 +420,15 @@ export default {
       if ('minDistance' in this._orbit) this._orbit.minDistance = Math.max(maxDim * 0.02, 0.001)
       if ('maxDistance' in this._orbit) this._orbit.maxDistance = Math.max(maxDim * 20, 10)
 
-      if (cameraCv) {
+      // Handle camera positioning
+      if (preserveCamera && savedCameraPos && savedCameraTarget) {
+        // Restore saved camera position
+        this._camera.matrixAutoUpdate = true
+        this._camera.position.copy(savedCameraPos)
+        this._orbit.target.copy(savedCameraTarget)
+        this._camera.updateProjectionMatrix()
+        this._orbit.update()
+      } else if (cameraCv) {
         this._applyOpenCVCameraToWorld(cameraCv, true)
       } else {
         this._frameToBBox()
@@ -456,6 +502,81 @@ export default {
 
       if (cameraCv) this._applyOpenCVCameraToWorld(cameraCv, true)
       this._updatePivotViz()
+    },
+
+    async reloadPointCloud(id) {
+      // Fade out current objects, then reload
+      await this._fadeOutCurrentObjects()
+      await this.loadById(id, true) // preserveCamera = true
+      this.$emit('loadComplete')
+    },
+
+    async _fadeOutCurrentObjects() {
+      if (this._pickables.length === 0) return
+
+      // Move current objects to fading array
+      const objectsToFade = [...this._pickables]
+      this._fadingObjects.push(...objectsToFade)
+      
+      // Clear current pickables
+      this._pickables = []
+      this._currentObject = null
+
+      // Enable transparency on materials
+      for (const obj of objectsToFade) {
+        const mat = obj.material
+        if (mat) {
+          if (Array.isArray(mat)) {
+            mat.forEach(m => {
+              m.transparent = true
+              m.opacity = 1.0
+            })
+          } else {
+            mat.transparent = true
+            mat.opacity = 1.0
+          }
+        }
+      }
+
+      // Animate fade out
+      const fadeDuration = 1200 // 1.2 seconds
+      const startTime = Date.now()
+
+      return new Promise((resolve) => {
+        const animateFade = () => {
+          const elapsed = Date.now() - startTime
+          const progress = Math.min(elapsed / fadeDuration, 1.0)
+          const opacity = 1.0 - progress
+
+          for (const obj of objectsToFade) {
+            const mat = obj.material
+            if (mat) {
+              if (Array.isArray(mat)) {
+                mat.forEach(m => { m.opacity = opacity })
+              } else {
+                mat.opacity = opacity
+              }
+            }
+          }
+
+          if (progress < 1.0) {
+            requestAnimationFrame(animateFade)
+          } else {
+            // Fade complete, dispose objects
+            for (const obj of objectsToFade) {
+              this._scene.remove(obj)
+              obj.geometry?.dispose?.()
+              const m = obj.material
+              if (Array.isArray(m)) m.forEach(mm => mm?.dispose?.())
+              else m?.dispose?.()
+            }
+            // Remove from fading array
+            this._fadingObjects = this._fadingObjects.filter(o => !objectsToFade.includes(o))
+            resolve()
+          }
+        }
+        animateFade()
+      })
     },
 
     // === Utilidades de cámara ===
@@ -555,6 +676,110 @@ export default {
       this._camera.updateProjectionMatrix()
       this._orbit.update()
       this._updatePivotViz()
+    },
+
+    async smartReload(id) {
+      console.log('[PLYViewer] Starting smart reload...')
+      const base = API_BASE
+      const url = `${base}/pointcloud/${encodeURIComponent(id)}/latest`
+      
+      try {
+        // 1. Fetch in background (no visual change yet)
+        const res = await fetch(url)
+        if (!res.ok) throw new Error(`HTTP ${res.status}`)
+        
+        const ctype = res.headers.get('content-type') || ''
+        let plyBuffer = null
+        let plyUrl = null
+        
+        // Parse response similar to loadById
+        if (ctype.includes('multipart/form-data')) {
+          const buffer = await res.arrayBuffer()
+          const parsed = parseMultipartResponse(buffer, ctype)
+          if (parsed.pointcloud) plyBuffer = parsed.pointcloud
+        } else if (ctype.includes('application/json')) {
+          const json = await res.json()
+          if (typeof json.pointcloud === 'string') {
+             if (json.pointcloud.startsWith('http') || json.pointcloud.startsWith('/')) plyUrl = json.pointcloud
+             else if (json.pointcloud.startsWith('data:') || /^[A-Za-z0-9+/]+=*$/.test(json.pointcloud)) plyBuffer = base64ToArrayBuffer(json.pointcloud)
+          }
+        } else {
+          plyBuffer = await res.arrayBuffer()
+        }
+
+        // 2. Parse geometry in memory
+        const loader = new PLYLoader()
+        let geometry
+        if (plyUrl) {
+          geometry = await new Promise((resolve, reject) => {
+            loader.load(plyUrl, g => resolve(g), undefined, err => reject(err))
+          })
+        } else if (plyBuffer) {
+          geometry = loader.parse(plyBuffer)
+        } else {
+          throw new Error('No data found')
+        }
+
+        geometry.computeVertexNormals?.()
+        geometry.computeBoundingBox?.()
+
+        // Calculate size for material
+        const bbox = geometry.boundingBox
+        let pointSize = 0.02
+        if (bbox) {
+          const size = bbox.getSize(new THREE.Vector3())
+          const maxDim = Math.max(size.x, size.y, size.z) || 1
+          pointSize = maxDim * 0.005
+        }
+
+        // Create new Object3D
+        let newObject
+        if (geometry.getAttribute && geometry.getAttribute('color')) {
+          const mat = new THREE.PointsMaterial({ size: pointSize, vertexColors: true, sizeAttenuation: true })
+          newObject = new THREE.Points(geometry, mat)
+          newObject.raycast = THREE.Points.prototype.raycast
+        } else {
+          const mat = new THREE.MeshStandardMaterial({ color: 0xaaaaaa, flatShading: false })
+          newObject = new THREE.Mesh(geometry, mat)
+        }
+
+        // 3. Hot Swap (Instant visual update)
+        // Remove old objects
+        this._removeCurrentObject()
+        
+        // Add new object
+        this._scene.add(newObject)
+        this._pickables = [newObject]
+        this._currentObject = newObject
+        
+        // Update bounding boxes
+        this._worldBBox.makeEmpty()
+        if (newObject.geometry?.boundingBox) this._worldBBox.union(newObject.geometry.boundingBox)
+        this._updateClampBBox()
+
+        // Notify UI via event
+        // this.showUpdateNotification("Modelo actualizado") // Internal bubble removed
+        if (this.pendingMetadata) {
+           this.$emit('model-updated', this.pendingMetadata)
+           this.pendingMetadata = null
+        } else {
+           // Fallback if no metadata was stored (e.g. initial load or manual reload)
+           this.$emit('model-updated', { user_id: 'System', image_id: 'Update' })
+        }
+        
+        console.log('[PLYViewer] Smart reload complete')
+
+      } catch (e) {
+        console.error('[PLYViewer] Smart reload failed:', e)
+      }
+    },
+
+    showUpdateNotification(msg) {
+      this.updateMessage = msg
+      this.showUpdateBubble = true
+      setTimeout(() => {
+        this.showUpdateBubble = false
+      }, 3000)
     },
 
     // ===== Helpers (Axes + Grid) =====
@@ -665,6 +890,84 @@ export default {
 
     toggleAxes() { if (this._axes) this._axes.visible = this.showAxes },
     toggleGrid() { if (this._grid) this._grid.visible = this.showGrid },
+
+    // ===== WebSocket Integration (using @vueuse/core) =====
+    initWebSocket(projectId) {
+      if (this.wsHandle) {
+        this.wsHandle.close()
+        this.wsHandle = null
+      }
+
+      let wsUrl = WS_API_BASE.replace(/^http/, 'ws')
+      if (!wsUrl || wsUrl.startsWith('/')) {
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+        const host = window.location.host
+        wsUrl = `${protocol}//${host}${API_BASE}`
+      }
+      
+      wsUrl = `${wsUrl}/ws/${projectId}`
+      
+      console.log('[PLYViewer] Connecting WebSocket:', wsUrl)
+      
+      // Initialize useWebSocket
+      const { status, data, send, close, open } = useWebSocket(wsUrl, {
+        autoReconnect: {
+          retries: -1, // Infinite retries
+          delay: 1000,
+          onFailed() {
+            console.log('[PLYViewer] Failed to connect WebSocket after retries')
+          },
+        },
+        heartbeat: {
+          message: JSON.stringify({ type: 'ping' }),
+          interval: 30000, // 30 seconds
+          pongTimeout: 10000,
+        },
+        onConnected: (ws) => {
+          console.log('[PLYViewer] WebSocket connected')
+          this.wsConnected = true
+        },
+        onDisconnected: (ws, event) => {
+          console.log('[PLYViewer] WebSocket disconnected')
+          this.wsConnected = false
+        },
+        onError: (ws, event) => {
+          console.error('[PLYViewer] WebSocket error:', event)
+        },
+      })
+
+      // Watch for data changes
+      watch(data, (newData) => {
+        if (!newData) return
+        try {
+          const msg = JSON.parse(newData)
+          // Handle pong if needed, but heartbeat handles it mostly
+          if (msg.type === 'pong') return
+
+          if (msg.type === 'update' && msg.status === 'updated') {
+            const receivedTime = Date.now() / 1000
+            console.log(`[PLYViewer] Received update notification at ${receivedTime.toFixed(3)}:`, msg)
+            
+            // Store metadata to emit later upon successful reload
+            if (msg.metadata) {
+              this.pendingMetadata = msg.metadata
+            }
+
+            if (msg.timestamp) {
+               const latency = receivedTime - msg.timestamp
+               console.log(`[PLYViewer] Notification Latency: ${latency.toFixed(3)}s`)
+            }
+            // Trigger smart reload
+            this.smartReload(projectId)
+          }
+        } catch (e) {
+          console.error('[PLYViewer] Error parsing WebSocket message:', e)
+        }
+      })
+
+      // Store handle to close later
+      this.wsHandle = { close, open, send, status, data }
+    },
   },
 }
 </script>
@@ -720,4 +1023,18 @@ export default {
 
 .toggles { display: flex; gap: 16px; }
 .coords { margin-top: 6px; opacity: 0.95; font-variant-numeric: tabular-nums; }
+
+/* Update Bubble REMOVED */
+
+/* Vue Transitions */
+.fade-enter-active,
+.fade-leave-active {
+  transition: opacity 0.3s ease, transform 0.3s ease;
+}
+
+.fade-enter-from,
+.fade-leave-to {
+  opacity: 0;
+  transform: translate(-50%, 10px);
+}
 </style>

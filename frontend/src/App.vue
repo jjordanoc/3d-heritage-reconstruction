@@ -8,7 +8,19 @@ body.no-scroll {
 
 <template>
   <RouterView />
+  <UserOnboardingModal v-if="showOnboarding" @close="showOnboarding = false" />
 </template>
+
 <script setup>
-/* vacío, deja que el router haga su trabajo */
+import { ref, onMounted, defineAsyncComponent } from 'vue'
+
+const UserOnboardingModal = defineAsyncComponent(() => import('@/components/UserOnboardingModal.vue'))
+const showOnboarding = ref(false)
+
+onMounted(() => {
+  const user = localStorage.getItem('heritage_user')
+  if (!user) {
+    showOnboarding.value = true
+  }
+})
 </script>

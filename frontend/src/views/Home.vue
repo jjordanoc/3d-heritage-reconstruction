@@ -8,13 +8,77 @@
       <div class="hero__bg"></div>
       <div class="hero__content">
         <h1>Reconstrucciones <span>3D</span></h1>
-        <p class="lead">Explora colecciones de reconstrucciones (demo) con modelos, nubes de puntos y mallas texturizadas.</p>
+        <p class="lead">Explora colecciones de reconstrucciones con modelos, nubes de puntos y mallas texturizadas.</p>
       </div>
     </section>
 
     <!-- CATEGORIES -->
     <section class="categories container">
-      <div
+      <!-- User Scenes Category -->
+      <div v-if="userScenes.length > 0 || true" class="category">
+        <div class="category__head">
+          <h2>Mis Escenas</h2>
+        </div>
+
+        <div class="grid">
+          <!-- Add Scene Card -->
+          <article
+            class="card add-scene-card"
+            tabindex="0"
+            @click="openModal"
+            @keydown.enter="openModal"
+            @keydown.space.prevent="openModal"
+          >
+            <div class="thumb add-thumb">
+              <svg class="plus-icon" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M12 5v14M5 12h14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </div>
+
+            <div class="card__body">
+              <h3 class="card__title">Crear Nueva Escena</h3>
+              <p class="card__sub">Sube imágenes para reconstruir</p>
+            </div>
+          </article>
+
+          <!-- User Scene Cards -->
+          <article
+            v-for="scene in userScenes"
+            :key="scene.id"
+            class="card"
+            tabindex="0"
+          >
+            <div class="thumb">
+              <img
+                :src="scene.img"
+                :alt="scene.title"
+                loading="lazy"
+                decoding="async"
+                @error="onImgError($event)"
+              />
+            </div>
+
+            <div class="card__body">
+              <h3 class="card__title">{{ scene.title }}</h3>
+              <p class="card__sub">{{ scene.subtitle }}</p>
+
+              <router-link
+                class="btn"
+                :to="{ name: 'viewer', query: { id: scene.id } }"
+                :aria-label="`Ver ${scene.title} en el visor`"
+              >
+                <svg class="btn__icon" viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M5 12h12M13 5l7 7-7 7" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+                View
+              </router-link>
+            </div>
+          </article>
+        </div>
+      </div>
+
+      <!-- Demo Categories -->
+      <!-- <div
         v-for="cat in categories"
         :key="cat.key"
         class="category"
@@ -48,7 +112,7 @@
               <router-link
                 class="btn"
                 :to="{ name: 'viewer', query: { id: item.id } }"
-                aria-label="Ver {{ item.title }} en el visor"
+                :aria-label="`Ver ${item.title} en el visor`"
               >
                 <svg class="btn__icon" viewBox="0 0 24 24" aria-hidden="true">
                   <path d="M5 12h12M13 5l7 7-7 7" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
@@ -58,38 +122,93 @@
             </div>
           </article>
         </div>
-      </div>
+      </div> -->
     </section>
+
+    <!-- Scene Creation Modal -->
+    <SceneModal v-if="showModal" @close="closeModal" @created="handleSceneCreated" />
   </div>
 </template>
 
 <script setup>
 import NavBar from '@/components/NavBar.vue'
-import { reactive } from 'vue'
+import SceneModal from '@/components/SceneModal.vue'
+import { reactive, ref, onMounted } from 'vue'
 
-const categories = reactive([
-  {
-    key: 'patrimonio',
-    title: 'Reconstrucciones de Patrimonio',
-    items: [
-      { id: 'huaca-pucllana', title: 'Huaca Pucallana', subtitle: 'Miraflores, Lima', img: '/img/patrimonio/pucllana.jpg' },
-    ],
-  },
-  // {
-  //   key: 'estructuras',
-  //   title: 'Reconstrucciones de Estructuras',
-  //   items: [
-  //     { id: 'puente-a', title: 'Puente A', subtitle: 'Modelo FEM', img: '/img/estructuras/bridge-a.jpg' },
-  //   ],
-  // },
-  {
-    key: 'entornos',
-    title: 'Reconstrucciones de Entornos',
-    items: [
-      { id: 'auditorio', title: 'Auditorio UTEC', subtitle: 'UTEC, Barranco', img: '/img/entornos/auditorio-utec.jpg' },
-    ],
-  },
-])
+// API base
+const API_BASE = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/+$/, '')
+
+// Modal state
+const showModal = ref(false)
+
+// User scenes from backend
+const userScenes = ref([])
+
+// Demo categories (hardcoded)
+// const categories = reactive([
+//   {
+//     key: 'patrimonio',
+//     title: 'Reconstrucciones de Patrimonio',
+//     items: [
+//       { id: 'huaca-pucllana', title: 'Huaca Pucallana', subtitle: 'Miraflores, Lima', img: '/img/patrimonio/pucllana.jpg' },
+//     ],
+//   },
+//   {
+//     key: 'estructuras',
+//     title: 'Reconstrucciones de Estructuras',
+//     items: [
+//       { id: 'puente-a', title: 'Puente A', subtitle: 'Modelo FEM', img: '/img/estructuras/bridge-a.jpg' },
+//     ],
+//   },
+//   {
+//     key: 'entornos',
+//     title: 'Reconstrucciones de Entornos',
+//     items: [
+//       { id: 'auditorio', title: 'Auditorio UTEC', subtitle: 'UTEC, Barranco', img: '/img/entornos/auditorio-utec.jpg' },
+//     ],
+//   },
+// ])
+
+// Fetch user scenes from backend
+async function fetchUserScenes() {
+  try {
+    const res = await fetch(`${API_BASE}/scenes`)
+    if (!res.ok) throw new Error(`Error ${res.status}`)
+    
+    const data = await res.json()
+    
+    // Map backend response to card format
+    userScenes.value = (data.scenes || []).map(scene => ({
+      id: scene.name,
+      title: scene.name,
+      subtitle: 'Escena personalizada',
+      img: `data:image/png;base64,${scene.thumbnail}`
+    }))
+  } catch (err) {
+    console.error('Failed to fetch user scenes:', err)
+    // Silent fail - just show empty user scenes
+    userScenes.value = []
+  }
+}
+
+// Modal handlers
+function openModal() {
+  showModal.value = true
+}
+
+function closeModal() {
+  showModal.value = false
+}
+
+async function handleSceneCreated(sceneName) {
+  // Refetch scenes to include the new one
+  await fetchUserScenes()
+}
+
+// Load user scenes on mount
+onMounted(() => {
+  fetchUserScenes()
+})
 
 function onImgError(e) {
   const svg = encodeURIComponent(`
@@ -114,30 +233,14 @@ function onImgError(e) {
 <style scoped>
 /* ====== Theme Tokens ====== */
 :root {
-  --bg: #0b0d12;
-  --bg-soft: #0f131a;
-  --card: rgba(255,255,255,0.06);
-  --card-stroke: rgba(255,255,255,0.12);
-  --text: #e6e9ef;
-  --muted: #9aa4b2;
-  --accent: #7cacf8;
-  --accent-2: #9b8cf2;
-  --ring: rgba(124,172,248,0.45);
-  --shadow: 0 10px 30px rgba(0,0,0,.25);
-}
-@media (prefers-color-scheme: light) {
-  :root {
-    --bg: #ffffff;
-    --bg-soft: #fbfdff;
-    --card: rgba(16,24,40,0.04);
-    --card-stroke: rgba(16,24,40,0.08);
-    --text: #0f172a;
-    --muted: #475569;
-    --accent: #2563eb;
-    --accent-2: #7c3aed;
-    --ring: rgba(37,99,235,.25);
-    --shadow: 0 12px 28px rgba(2,6,23,.12);
-  }
+  --bg: #f3f4ff;
+  --bg-soft: #fbfdff;
+  --text: #0f172a;
+  --muted: #475569;
+  --accent: #2563eb;
+  --accent-2: #7c3aed;
+  --ring: rgba(37, 99, 235, 0.25);
+  --shadow: 0 16px 40px rgba(15, 23, 42, 0.12);
 }
 
 /* ====== Layout ====== */
@@ -159,7 +262,7 @@ function onImgError(e) {
 .hero {
   position: relative;
   overflow: clip;
-  border-bottom: 1px solid var(--card-stroke);
+  border-bottom: 1px solid rgba(148, 163, 184, 0.18);
 }
 .hero__bg {
   position: absolute;
@@ -167,8 +270,8 @@ function onImgError(e) {
   filter: blur(40px);
   background:
     radial-gradient(1200px 400px at 10% -10%, rgba(124,172,248,.25), transparent 60%),
-    radial-gradient(1000px 500px at 90% -20%, rgba(155,140,242,.22), transparent 60%),
-    linear-gradient(180deg, rgba(255,255,255,.06), transparent 40%);
+    radial-gradient(1000px 500px at 90% -20%, rgba(155,140,242,.20), transparent 60%),
+    linear-gradient(180deg, rgba(255,255,255,.9), #ffffff);
   animation: float 12s ease-in-out infinite alternate;
 }
 @keyframes float {
@@ -237,40 +340,64 @@ function onImgError(e) {
   gap: 18px;
 }
 
+/* Cards SIEMPRE claras, como el modal */
 .card {
-  background: var(--card);
-  border: 1px solid var(--card-stroke);
-  border-radius: 16px;
+  background:
+    radial-gradient(140% 160% at 0% 0%, rgba(124, 172, 248, 0.22), transparent 55%),
+    radial-gradient(140% 160% at 100% 0%, rgba(155, 140, 242, 0.20), transparent 55%),
+    linear-gradient(180deg, #f9fafb, #ffffff);
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  border-radius: 18px;
   overflow: hidden;
   box-shadow: var(--shadow);
-  backdrop-filter: saturate(140%) blur(6px);
+  backdrop-filter: blur(10px) saturate(150%);
   transform: translateZ(0);
-  transition: transform .25s ease, box-shadow .25s ease, border-color .25s ease;
+  transition:
+    transform .25s ease,
+    box-shadow .25s ease,
+    border-color .25s ease,
+    background .25s ease;
   will-change: transform;
 }
+
 .card:focus-within,
 .card:hover {
   transform: translateY(-4px);
   border-color: var(--ring);
-  box-shadow: 0 16px 40px rgba(0,0,0,.28);
+  box-shadow: 0 20px 50px rgba(15, 23, 42, 0.16);
 }
 
-/* Área de imagen cuadrada (≈200×200, responsivo) */
+/* Área de imagen cuadrada: la foto escala con el cuadrado */
 .thumb {
-  display: grid;
-  place-items: center;
-  background: linear-gradient(180deg, rgba(255,255,255,.06), transparent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.9), #f3f4ff);
   aspect-ratio: 1 / 1;
-  min-height: 200px; /* asegura ~200px en pantallas pequeñas */
-}
-.thumb img {
-  width: clamp(180px, 20vw, 220px);
-  height: clamp(180px, 20vw, 220px);
-  object-fit: cover;
-  border-radius: 12px;
-  box-shadow: 0 8px 20px rgba(0,0,0,.25);
+  min-height: 200px; /* asegura que no sea muy chica en desktop */
 }
 
+/* La imagen ocupa un % del lado del cuadrado */
+.thumb img {
+  width: 72%;
+  height: 72%;
+  max-width: 400px;
+  max-height: 400px;
+  object-fit: cover;
+  border-radius: 14px;
+  box-shadow: 0 8px 20px rgba(15, 23, 42, 0.18);
+}
+
+/* En mobile la hacemos aún más grande dentro del cuadrado */
+@media (max-width: 768px) {
+  .thumb img {
+    width: 90%;
+    height: 90%;
+  }
+}
+
+/* Cuerpo de la card */
 .card__body {
   padding: 14px 14px 16px;
   display: grid;
@@ -279,6 +406,7 @@ function onImgError(e) {
 .card__title {
   margin: 0;
   font-size: 16px;
+  color: #0f172a;
 }
 .card__sub {
   margin: 0 0 6px;
@@ -294,26 +422,81 @@ function onImgError(e) {
   padding: 10px 14px;
   border-radius: 12px;
   text-decoration: none;
-  color: var(--text);
+  color: #0f172a;
   background:
-    linear-gradient(180deg, rgba(255,255,255,.08), rgba(255,255,255,.02));
-  border: 1px solid var(--card-stroke);
+    linear-gradient(180deg, rgba(255,255,255,0.95), rgba(248,250,252,0.9));
+  border: 1px solid rgba(148,163,184,0.45);
   outline: none;
-  transition: transform .18s ease, background .2s ease, border-color .2s ease, box-shadow .2s ease;
+  transition:
+    transform .18s ease,
+    background .2s ease,
+    border-color .2s ease,
+    box-shadow .2s ease;
 }
 .btn__icon {
   width: 18px; height: 18px;
 }
-.btn:hover, .btn:focus-visible {
+.btn:hover,
+.btn:focus-visible {
   border-color: var(--ring);
   box-shadow: 0 0 0 6px var(--ring);
   transform: translateY(-1px);
+}
+
+/* ====== Add Scene Card ====== */
+.add-scene-card {
+  cursor: pointer;
+  border-style: dashed;
+  border-width: 2px;
+  border-color: rgba(148, 163, 184, 0.5);
+  background:
+    radial-gradient(140% 160% at 0% 0%, rgba(124, 172, 248, 0.16), transparent 55%),
+    radial-gradient(140% 160% at 100% 0%, rgba(155, 140, 242, 0.16), transparent 55%),
+    linear-gradient(180deg, #f9fafb, #ffffff);
+}
+
+.add-scene-card:hover,
+.add-scene-card:focus-visible {
+  border-color: var(--accent);
+  box-shadow: 0 18px 44px rgba(15, 23, 42, 0.16);
+}
+
+.add-thumb {
+  background: transparent;
+  display: grid;
+  place-items: center;
+}
+
+.plus-icon {
+  width: 60px;
+  height: 60px;
+  color: var(--muted);
+  transition: color 0.2s, transform 0.2s;
+}
+
+.add-scene-card:hover .plus-icon,
+.add-scene-card:focus-visible .plus-icon {
+  color: var(--accent);
+  transform: scale(1.1);
+}
+
+.add-scene-card .card__title {
+  color: var(--muted);
+}
+
+.add-scene-card:hover .card__title,
+.add-scene-card:focus-visible .card__title {
+  color: #0f172a;
 }
 
 /* ====== Motion preferences ====== */
 @media (prefers-reduced-motion: reduce) {
   .hero__bg,
   .card,
-  .btn { transition: none; animation: none; }
+  .btn,
+  .plus-icon {
+    transition: none;
+    animation: none;
+  }
 }
 </style>

@@ -1,13 +1,27 @@
 <template>
   <div class="page">
+    <!-- Update Feed (replaces Viewer Toggle) -->
+    <UpdateFeed ref="updateFeedRef" v-if="projectId" :project-id="projectId" />
+
     <Suspense>
       <template #default>
-        <AsyncPLYViewer ref="viewerRef" />
+        <component 
+          :is="AsyncPLYViewer"
+          ref="viewerRef" 
+          @loadComplete="onLoadComplete"
+          @model-updated="onModelUpdated"
+        />
       </template>
       <template #fallback>
         <div class="loading">Cargando visor…</div>
       </template>
     </Suspense>
+
+    <!-- Loading overlay during re-fetch -->
+    <div v-if="reloading" class="loading-overlay">
+      <div class="spinner"></div>
+      <p>Cargando...</p>
+    </div>
 
     <!-- Overlay inferior -->
     <div class="upload-bar">
@@ -38,13 +52,22 @@
 </template>
 
 <script setup>
-import { onMounted, onUnmounted, ref, defineAsyncComponent } from 'vue'
+import { onMounted, onUnmounted, ref, defineAsyncComponent, computed } from 'vue'
+import { useRoute } from 'vue-router'
+import UpdateFeed from '@/components/UpdateFeed.vue'
 
 const AsyncPLYViewer = defineAsyncComponent(() => import('@/components/PLYViewer.vue'))
+// const AsyncGSplatViewer = defineAsyncComponent(() => import('@/components/GSplatViewer.vue')) // Unused
 const viewerRef = ref(null)
+const updateFeedRef = ref(null)
 const fileInput = ref(null)
 const selectedFile = ref(null)
 const uploading = ref(false)
+const reloading = ref(false)
+// const currentViewerType = ref('ply') // Defaulting to PLY, no toggle needed
+
+const route = useRoute()
+const projectId = computed(() => (route.query.id || route.params.id)?.toString())
 
 onMounted(() => {
   document.body.classList.add('no-scroll')
@@ -70,11 +93,29 @@ function discardFile() {
   fileInput.value.value = ''
 }
 
+function onLoadComplete() {
+  uploading.value = false
+  reloading.value = false
+}
+
+function onModelUpdated(metadata) {
+  if (updateFeedRef.value && metadata) {
+    // Normalize metadata: might be an array or an object
+    const updates = Array.isArray(metadata) ? metadata : [metadata]
+    
+    updates.forEach(meta => {
+      const userId = meta.user_id || 'System'
+      const imageId = meta.image_id || 'Update'
+      updateFeedRef.value.addMessage(userId, imageId)
+    })
+  }
+}
+
 async function uploadFile() {
   if (!selectedFile.value) return
   uploading.value = true
 
-  const id = viewerRef.value?.$route?.query?.id || viewerRef.value?.$route?.params?.id
+  const id = projectId.value
   if (!id) {
     alert('No se encontró ID del modelo.')
     uploading.value = false
@@ -83,6 +124,10 @@ async function uploadFile() {
 
   const form = new FormData()
   form.append('file', selectedFile.value) // backend espera 'file', no 'image'
+  
+  // Add user_id from localStorage
+  const userId = localStorage.getItem('heritage_user') || 'Guest'
+  form.append('user_id', userId)
 
   try {
     const res = await fetch(`${API_BASE}/pointcloud/${encodeURIComponent(id)}`, {
@@ -92,26 +137,25 @@ async function uploadFile() {
 
     if (!res.ok) throw new Error(`Error ${res.status}`)
     
-    // Obtener respuesta multipart
-    const contentType = res.headers.get('content-type') || ''
-    const buffer = await res.arrayBuffer()
-
-    // Pasar al viewer para actualización incremental
-    await viewerRef.value?.addIncrementalPoints(buffer, contentType)
+    // Expect JSON response {"success": true}
+    const data = await res.json()
     
-    // Programar GET completo después de 1 minuto
-    console.log('[Viewer] Scheduling full reconstruction fetch in 60 seconds...')
-    setTimeout(() => {
-      console.log('[Viewer] Fetching full reconstruction...')
-      viewerRef.value?.loadById(id)
-    }, 60000) // 60 segundos
+    if (data.success) {
+      // NOTE: We don't trigger reload here anymore because the update
+      // comes asynchronously via WebSocket when reconstruction finishes.
+      // We just reset the UI state.
+      // reloading.value = true 
+      // await viewerRef.value?.reloadPointCloud(id)
+      console.log("Upload successful, waiting for WebSocket update...")
+      uploading.value = false
+    }
     
     discardFile()
   } catch (err) {
     console.error(err)
     alert('Error al subir imagen.')
-  } finally {
     uploading.value = false
+    reloading.value = false
   }
 }
 </script>
@@ -172,4 +216,42 @@ async function uploadFile() {
 .btn.primary:hover { background: #1e4fba; }
 .btn.danger { background: #ef4444; border-color: #ef4444; }
 .btn.danger:hover { background: #b91c1c; }
+
+/* Loading overlay */
+.loading-overlay {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  background: rgba(11, 13, 18, 0.85);
+  backdrop-filter: blur(8px);
+  padding: 24px 32px;
+  border-radius: 16px;
+  border: 1px solid rgba(255,255,255,0.15);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  z-index: 100;
+}
+
+.loading-overlay p {
+  margin: 0;
+  color: #e6e9ef;
+  font-size: 16px;
+  font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+}
+
+.spinner {
+  width: 40px;
+  height: 40px;
+  border: 3px solid rgba(124,172,248,0.2);
+  border-top-color: #7cacf8;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
 </style>

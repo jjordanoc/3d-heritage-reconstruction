@@ -6,5 +6,10 @@ export default defineConfig({
   plugins: [vue()],
   resolve: {
     alias: { '@': fileURLToPath(new URL('./src', import.meta.url)) }
+  },
+  server: {
+    host: '0.0.0.0',
+    allowedHosts: true, // Allow all hostnames
+    // ... other server options
   }
 })
