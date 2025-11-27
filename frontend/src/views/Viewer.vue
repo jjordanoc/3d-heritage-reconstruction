@@ -99,10 +99,15 @@ function onLoadComplete() {
 }
 
 function onModelUpdated(metadata) {
-  if (updateFeedRef.value) {
-    const userId = metadata.user_id || 'System'
-    const imageId = metadata.image_id || 'Update'
-    updateFeedRef.value.addMessage(userId, imageId)
+  if (updateFeedRef.value && metadata) {
+    // Normalize metadata: might be an array or an object
+    const updates = Array.isArray(metadata) ? metadata : [metadata]
+    
+    updates.forEach(meta => {
+      const userId = meta.user_id || 'System'
+      const imageId = meta.image_id || 'Update'
+      updateFeedRef.value.addMessage(userId, imageId)
+    })
   }
 }
 
