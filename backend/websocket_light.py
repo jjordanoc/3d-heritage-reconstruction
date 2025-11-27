@@ -218,6 +218,7 @@ def process_infered_data(inf_data_path, id, conf_thres=50,simplify=False):
     timeout=24*60*60, # 24 hours
     max_containers=1
 )
+@modal.concurrent(max_inputs=1000)
 def process_queue(project_id: str):
     import shutil
     
@@ -249,6 +250,10 @@ def process_queue(project_id: str):
     
     print(f"{Colors.CYAN}Processing batch of {len(items)} items for Project {project_id}{Colors.RESET}")
     
+    # LOGGING: Extract and print image IDs in this batch
+    batch_image_ids = [item.get("image_id", "unknown") for item in items]
+    print(f"{Colors.MAGENTA}Batch contains {len(batch_image_ids)} images: {batch_image_ids}{Colors.RESET}")
+    
     # Use the LAST item's image_id as the "latest" identifier for status updates
     latest_item = items[-1]
     image_id = latest_item["image_id"]
@@ -279,7 +284,7 @@ def process_queue(project_id: str):
     log_time("Acquire Lock", lock_start)
     
     images_path_relative = f"/backend_data/reconstructions/{project_id}/images" # Path relative to volume root for inference
-
+    
     try:
         # 1. Run Inference
         print(f"{Colors.CYAN}Starting remote inference for {project_id}...{Colors.RESET}")
@@ -381,35 +386,46 @@ def process_queue(project_id: str):
 
 class ConnectionManager:
     def __init__(self):
-        self.active_connections: dict[str, list[WebSocket]] = {}
+        self.active_connections: dict[str, list[tuple[str, WebSocket]]] = {}
 
-    async def connect(self, project_id: str, websocket: WebSocket):
+    async def connect(self, project_id: str, user_id: str, websocket: WebSocket):
         await websocket.accept()
         if project_id not in self.active_connections:
             self.active_connections[project_id] = []
-        self.active_connections[project_id].append(websocket)
-        print(self.active_connections)
+        self.active_connections[project_id].append((user_id, websocket))
         print(f"Client connected to {project_id}. Total: {len(self.active_connections[project_id])}")
+        print("Connections: ", self.active_connections)
 
-    def disconnect(self, project_id: str, websocket: WebSocket):
+    def disconnect(self, project_id: str, user_id: str, websocket: WebSocket):
         if project_id in self.active_connections:
-            if websocket in self.active_connections[project_id]:
-                self.active_connections[project_id].remove(websocket)
+            if (user_id, websocket) in self.active_connections[project_id]:
+                self.active_connections[project_id].remove((user_id, websocket))
             if not self.active_connections[project_id]:
                 del self.active_connections[project_id]
         print(f"Client disconnected from {project_id}")
 
     async def broadcast(self, project_id: str, message: dict):
         if project_id in self.active_connections:
-            disconnected = []
-            for connection in self.active_connections[project_id]:
+            # Define a safe sender wrapper
+            async def safe_send(user_id, connection):
                 try:
                     await connection.send_json(message)
+                    return None
                 except Exception:
-                    disconnected.append(connection)
+                    return (user_id, connection)
+
+            # Gather all send tasks
+            tasks = [
+                safe_send(uid, conn) 
+                for uid, conn in self.active_connections[project_id]
+            ]
+            results = await asyncio.gather(*tasks)
             
-            for connection in disconnected:
-                self.disconnect(project_id, connection)
+            # Process failures
+            for result in results:
+                if result:
+                    uid, conn = result
+                    self.disconnect(project_id, uid, conn)
 
 manager = ConnectionManager()
 
@@ -419,6 +435,7 @@ manager = ConnectionManager()
     max_containers=1, # MUST be 1 to allow centralized ConnectionManager
     timeout=24*60*60 # 24 hours
 )
+@modal.concurrent(max_inputs=1000)
 @modal.asgi_app()
 def fastapi_app():
     web_app = FastAPI()
@@ -434,34 +451,54 @@ def fastapi_app():
     @web_app.on_event("startup")
     async def startup_event():
         print("Starting notification consumer...")
-        asyncio.create_task(consume_notifications())
+        # Store task in app state to cancel it later
+        web_app.state.consume_task = asyncio.create_task(consume_notifications())
+
+    @web_app.on_event("shutdown")
+    async def shutdown_event():
+        print("Shutting down notification consumer...")
+        if hasattr(web_app.state, "consume_task") and web_app.state.consume_task:
+            web_app.state.consume_task.cancel()
+            try:
+                await web_app.state.consume_task
+            except asyncio.CancelledError:
+                print("Notification consumer cancelled.")
+            except Exception as e:
+                print(f"Error during consumer shutdown: {e}")
 
     async def consume_notifications():
         print("Notification consumer running...")
-        while True:
-            try:
-                # Use get_many with blocking to wait efficiently
-                # Draining default partition
-                items = await notification_queue.get_many.aio(block=True, timeout=5.0, n_values=100)
-                
-                if items:
-                    print(f"Consumer: Received {len(items)} notifications")
-                    for item in items:
-                        pid = item.get("project_id")
-                        print(pid)
-                        if pid:
-                            await manager.broadcast(pid, item)
-                        else:
-                            print(f"Warning: Notification missing project_id: {item}")
+        try:
+            while True:
+                try:
+                    # Use get_many with blocking to wait efficiently
+                    # Draining default partition
+                    items = await notification_queue.get_many.aio(block=True, timeout=5.0, n_values=100)
+                    
+                    if items:
+                        print(f"Consumer: Received {len(items)} notifications")
+                        for item in items:
+                            pid = item.get("project_id")
+                            if pid:
+                                await manager.broadcast(pid, item)
+                            else:
+                                print(f"Warning: Notification missing project_id: {item}")
 
-            except queue.Empty:
-                # Timeout reached, loop again
-                pass
-            except Exception as e:
-                print(f"Error in notification consumer: {e}")
-            
-            # Tiny sleep not strictly needed with blocking get, but safe
-            await asyncio.sleep(0.01)
+                except queue.Empty:
+                    # Timeout reached, loop again
+                    pass
+                except Exception as e:
+                    if "ClientClosed" in str(e):
+                        print("Modal Client Closed. Exiting consumer.")
+                        break
+                    print(f"Error in notification consumer: {e}")
+                    await asyncio.sleep(1)
+                
+                # Tiny sleep not strictly needed with blocking get, but safe
+                # await asyncio.sleep(0.01) 
+        except asyncio.CancelledError:
+            print("Consumer loop cancelled via CancelledError.")
+            raise
 
     @web_app.get("/health")
     async def health():
@@ -469,23 +506,10 @@ def fastapi_app():
 
     @web_app.websocket("/ws/{project_id}")
     async def websocket_endpoint(websocket: WebSocket, project_id: str):
-        await manager.connect(project_id, websocket)
-        
-        # Initial Sync
-        # try:
-        #     state = await reconstruction_state.get.aio(project_id)
-        #     if state:
-        #         msg = {
-        #             "type": "update",
-        #             "image_id": state.get("latest_image_id"),
-        #             "timestamp": state.get("timestamp"),
-        #             "status": state.get("status")
-        #         }
-        #         if state.get("status") == "error":
-        #             msg["error"] = state.get("error")
-        #         await websocket.send_json(msg)
-        # except Exception:
-        #     pass
+        import uuid
+        user_id = str(uuid.uuid4())
+        await manager.connect(project_id, user_id, websocket)
+        print(f"Connected to {project_id} with UUID {user_id}")
 
         try:
             while True:
@@ -493,9 +517,9 @@ def fastapi_app():
                 if data.get("type") == "ping":
                     await websocket.send_json({"type": "pong"})
         except WebSocketDisconnect:
-            manager.disconnect(project_id, websocket)
+            manager.disconnect(project_id, user_id, websocket)
         except Exception as e:
             print(f"Error in websocket: {e}")
-            manager.disconnect(project_id, websocket)
-
+            manager.disconnect(project_id, user_id, websocket)
+        print(f"Disconnected from {project_id} with UUID {user_id}")
     return web_app
