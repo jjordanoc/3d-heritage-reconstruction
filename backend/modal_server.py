@@ -636,5 +636,41 @@ def fastapi_app():
             media_type=multipart_data.content_type
         )
 
+    @web_app.get("/splat/{id}")
+    async def get_splat_model(id: str):
+        """
+        Download the trained .ply file.
+        
+        Args:
+            id: Scene ID
+        
+        Returns:
+            FileResponse with results.ply
+        """
+        endpoint_start = time.time()
+        print(f"\n{'='*80}")
+        print(f"{Colors.CYAN}📥 [GET /splat/{id}] ENDPOINT CALLED{Colors.RESET}")
+        print(f"{'='*80}\n")
+        
+        results_ply = Path(vol_mnt_loc) / "backend_data" / "reconstructions" / id / "splats" / "splat.ply"
+        
+        if not results_ply.exists():
+            print(f"{Colors.RED}❌ ERROR: Model file not found at {results_ply}{Colors.RESET}")
+            raise HTTPException(
+                status_code=404,
+                detail=f"Trained model not found for scene {id}. Run training first."
+            )
+        
+        print(f"{Colors.GREEN}✅ Serving model file: {results_ply}{Colors.RESET}")
+        log_time("Endpoint response time", endpoint_start)
+        print(f"{'='*80}\n")
+        
+        return FileResponse(
+            path=results_ply,
+            filename=f"{id}_splat.ply",
+            media_type="application/octet-stream"
+        )
+
 
     return web_app
+    

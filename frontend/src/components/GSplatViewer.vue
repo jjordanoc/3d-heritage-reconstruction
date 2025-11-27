@@ -28,7 +28,7 @@ import * as THREE from 'three'
 import { ArcballControls } from 'three/examples/jsm/controls/ArcballControls.js'
 import { SplatMesh } from '@sparkjsdev/spark'
 
-const API_BASE = (import.meta.env.VITE_SPLAT_API_BASE_URL || '').replace(/\/+$/, '')
+const API_BASE = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/+$/, '')
 
 export default {
   name: 'GSplatViewer',
@@ -254,7 +254,7 @@ export default {
       }
 
       const base = API_BASE
-      const url = `${base}/scene/${encodeURIComponent(id)}/gsplat/model`
+      const url = `${base}/splat/${encodeURIComponent(id)}`
       
       console.log('[GSplatViewer] Loading gsplat from:', url)
 
@@ -272,12 +272,19 @@ export default {
       console.log('[GSplatViewer] Created blob URL:', blobUrl)
       
       // Create SplatMesh with blob URL
-      const splatMesh = new SplatMesh({ url: blobUrl })
+      const splatMesh = new SplatMesh({ url: blobUrl, alphaTest: 0.1, renderOrder: 0 })
       
       // Wait for splat to load
       await new Promise((resolve, reject) => {
+        // SparkJS SplatMesh loads async but doesn't expose a clean promise yet in all versions.
+        // We can check readiness or just wait a bit if needed, or rely on the fact it's created.
+        // Actually, SplatMesh might start loading immediately.
+        // Let's assume if we added it, it's fine, but we might want to wait for geometry.
+        
         const checkLoaded = setInterval(() => {
           // Check if the splat has loaded by checking if it has geometry/data
+          // NOTE: Internal structure of SplatMesh might vary. 
+          // It usually extends Mesh.
           if (splatMesh.geometry && splatMesh.geometry.attributes) {
             clearInterval(checkLoaded)
             resolve()
@@ -294,11 +301,13 @@ export default {
       console.log('[GSplatViewer] Splat loaded successfully')
       
       // Clean up blob URL after loading
-      URL.revokeObjectURL(blobUrl)
+      // URL.revokeObjectURL(blobUrl) // Keep it alive for the mesh
 
       // Calculate bounding box from splat
-      splatMesh.geometry.computeBoundingBox()
-      const bbox = splatMesh.geometry.boundingBox
+      if (splatMesh.geometry && !splatMesh.geometry.boundingBox) {
+         splatMesh.geometry.computeBoundingBox()
+      }
+      const bbox = splatMesh.geometry?.boundingBox
 
       let center = new THREE.Vector3(0, 0, 0)
       let maxDim = 1
@@ -315,7 +324,16 @@ export default {
 
       // BBoxes globales
       this._worldBBox.makeEmpty()
-      if (splatMesh.geometry?.boundingBox) this._worldBBox.union(splatMesh.geometry.boundingBox)
+      
+      // SparkJS splats might not have a computed bounding box immediately ready or it might be huge.
+      // If computed, use it. Otherwise default.
+      if (splatMesh.geometry?.boundingBox) {
+          this._worldBBox.union(splatMesh.geometry.boundingBox)
+      } else {
+          // Fallback bbox if not computed
+          this._worldBBox.setFromCenterAndSize(new THREE.Vector3(0,0,0), new THREE.Vector3(10,10,10))
+      }
+      
       this._updateClampBBox()
 
       // Helpers al tamaño

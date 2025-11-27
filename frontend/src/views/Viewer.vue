@@ -6,7 +6,7 @@
     <Suspense>
       <template #default>
         <component 
-          :is="AsyncPLYViewer"
+          :is="currentViewerType === 'ply' ? AsyncPLYViewer : AsyncGSplatViewer"
           ref="viewerRef" 
           @loadComplete="onLoadComplete"
           @model-updated="onModelUpdated"
@@ -57,17 +57,19 @@ import { useRoute } from 'vue-router'
 import UpdateFeed from '@/components/UpdateFeed.vue'
 
 const AsyncPLYViewer = defineAsyncComponent(() => import('@/components/PLYViewer.vue'))
-// const AsyncGSplatViewer = defineAsyncComponent(() => import('@/components/GSplatViewer.vue')) // Unused
+const AsyncGSplatViewer = defineAsyncComponent(() => import('@/components/GSplatViewer.vue'))
 const viewerRef = ref(null)
 const updateFeedRef = ref(null)
 const fileInput = ref(null)
 const selectedFile = ref(null)
 const uploading = ref(false)
 const reloading = ref(false)
-// const currentViewerType = ref('ply') // Defaulting to PLY, no toggle needed
 
 const route = useRoute()
 const projectId = computed(() => (route.query.id || route.params.id)?.toString())
+const currentViewerType = computed(() => {
+  return route.query.view === 'splat' ? 'gsplat' : 'ply'
+})
 
 onMounted(() => {
   document.body.classList.add('no-scroll')
