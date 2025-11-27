@@ -68,7 +68,7 @@ def preprocess_image(image_bytes: bytes, target_size: int = 512) -> Image.Image:
     return img
 
 # Helper to extract last pointcloud from predictions
-def extract_last_image_pointcloud(inf_data_path, id, conf_thres=50):
+def extract_last_image_pointcloud(inf_data_path, id, conf_thres=50, simplify=False):
     """
     Extracts the pointcloud and camera pose for the LAST (most recent) image.
     Returns: tuple (last_pc_ply_path, camera_pose)
@@ -123,15 +123,49 @@ def extract_last_image_pointcloud(inf_data_path, id, conf_thres=50):
     temp_folder = VOL_MOUNT_PATH / "backend_data" / "reconstructions" / str(id) / "models"
     temp_folder.mkdir(parents=True, exist_ok=True)
     temp_ply_path = temp_folder / "latest.ply" # Saving as latest.ply directly
+
+    if (simplify):
+        print("Simplifying pointcloud...")
+        pcd = rescaled_voxel_simplify(og_voxel_size=0.00065, pointcloud=pcd)
+        print(f"Simplified pointcloud has {len(pcd.points)} points.")
     
     o3d.io.write_point_cloud(str(temp_ply_path), pcd)
     print(f"Saved pointcloud to {temp_ply_path}")
     
     return str(temp_ply_path), camera_pose
 
-def process_infered_data(inf_data_path, id, conf_thres=50):
+def rescaled_voxel_simplify(og_voxel_size: float, pointcloud):
+    """
+    Faster voxel downsampling using chord length of the point cloud.
+    Mutates the original pointcloud (doesn't preserve it).
+    """
+    import numpy as np
+    import open3d as o3d
+    print(f"Number of points before downsampling: {len(pointcloud.points)}")
+    # Remove outliers in-place (for chord computation)
+    print("Removing statistical outliers... (Skip for fastness)")
+    #pointcloud, _ = pointcloud.remove_statistical_outlier(nb_neighbors=20, std_ratio=2.0)
+    print("Removing statistical outliers done")
+    # Compute oriented bounding box
+    print("Computing bbx...")
+    obb = pointcloud.get_oriented_bounding_box()
+    corners = np.asarray(obb.get_box_points())
+    print("Computing bbx done")
+
+    # Chord length = max distance between corners
+    chord_length = np.max(np.linalg.norm(corners[:, None, :] - corners[None, :, :], axis=-1))
+
+    # Downsample directly
+    print("Downsampling pointcloud...")
+    voxel_size = chord_length * og_voxel_size
+    pcd = pointcloud.voxel_down_sample(voxel_size=voxel_size)
+    print("Downsampling pointcloud done")
+    return pcd
+
+def process_infered_data(inf_data_path, id, conf_thres=50,simplify=False):
     """
     Process full reconstruction (all images combined)
+    Returns path to saved PLY file.
     """
     import torch
     import numpy as np
@@ -166,9 +200,14 @@ def process_infered_data(inf_data_path, id, conf_thres=50):
     pcd = o3d.geometry.PointCloud()
     pcd.points = o3d.utility.Vector3dVector(vertices_3d)
     pcd.colors = o3d.utility.Vector3dVector(colors_rgb / 255.0)
-
+    if (simplify):
+        print("Simplifying full pointcloud...")
+        pcd = rescaled_voxel_simplify(og_voxel_size=(0.0065/5), pointcloud=pcd)
+        print(f"Simplified full pointcloud has {len(pcd.points)} points.")
     # Save as PLY
     o3d.io.write_point_cloud(pty_location, pcd)
+
+    # pointcloud simplification
     print(f"Saved full pointcloud to {pty_location}")
     return pty_location
 
@@ -277,7 +316,7 @@ def process_queue(project_id: str):
         
         # 3. Process Inference Data (create PLY)
         ply_proc_start = time.time()
-        result_ply = process_infered_data(str(inference_path), project_id)
+        result_ply = process_infered_data(str(inference_path), project_id,simplify=True)
         log_time("Process Inferred Data (PLY)", ply_proc_start)
         
         # Commit volume changes
