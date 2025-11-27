@@ -175,6 +175,7 @@ def fastapi_app():
         
         return str(temp_ply_path), camera_pose
 
+    # asume que es chiquito
     async def upload_image(id: str, file: UploadFile = File(...), image_folder="images"):
         """
             Takes a project id and a file and preprocesses and puts the image 
