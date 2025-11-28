@@ -3,6 +3,26 @@
     <!-- Update Feed (replaces Viewer Toggle) -->
     <UpdateFeed ref="updateFeedRef" v-if="projectId" :project-id="projectId" />
 
+    <!-- Viewer Switcher -->
+    <div class="viewer-switcher">
+      <button 
+        class="btn small" 
+        :class="{ active: currentViewerType === 'ply' }"
+        @click="switchViewer('ply')"
+        :disabled="currentViewerType === 'ply'"
+      >
+        Real-time Viewer
+      </button>
+      <button 
+        class="btn small" 
+        :class="{ active: currentViewerType === 'gsplat' }"
+        @click="switchViewer('gsplat')"
+        :disabled="currentViewerType === 'gsplat'"
+      >
+        Splat Viewer
+      </button>
+    </div>
+
     <Suspense>
       <template #default>
         <component 
@@ -54,7 +74,7 @@
 
 <script setup>
 import { onMounted, onUnmounted, ref, defineAsyncComponent, computed } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import UpdateFeed from '@/components/UpdateFeed.vue'
 
 const AsyncPLYViewer = defineAsyncComponent(() => import('@/components/PLYViewer.vue'))
@@ -67,6 +87,7 @@ const uploading = ref(false)
 const reloading = ref(false)
 
 const route = useRoute()
+const router = useRouter()
 const projectId = computed(() => (route.query.id || route.params.id)?.toString())
 
 const props = defineProps({
@@ -77,6 +98,14 @@ const currentViewerType = computed(() => {
   if (props.viewType === 'gsplat') return 'gsplat'
   return route.query.view === 'splat' ? 'gsplat' : 'ply'
 })
+
+function switchViewer(type) {
+  const targetRoute = type === 'gsplat' ? 'splatViewer' : 'viewer'
+  router.push({ 
+    name: targetRoute, 
+    query: { id: projectId.value } 
+  })
+}
 
 onMounted(() => {
   document.body.classList.add('no-scroll')
@@ -181,6 +210,33 @@ async function uploadFile() {
   overflow: hidden;      /* evita scroll dentro del contenedor */
 }
 
+/* Viewer Switcher Buttons */
+.viewer-switcher {
+  position: fixed;
+  top: 140px; /* Positioned below the HUD (approx 130px height) */
+  left: 10px;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  background: rgba(10, 12, 18, 0.7);
+  backdrop-filter: blur(4px);
+  padding: 8px;
+  border-radius: 12px;
+  border: 1px solid rgba(255,255,255,0.1);
+}
+
+.viewer-switcher .btn {
+  text-align: left;
+  min-width: 140px;
+}
+
+.viewer-switcher .btn.active {
+  background: rgba(124, 172, 248, 0.4);
+  border-color: #7cacf8;
+  cursor: default;
+}
+
 /* Mantén tu loading como estaba */
 .loading {
   color: #e6e9ef;
@@ -225,6 +281,7 @@ async function uploadFile() {
 .btn.primary:hover { background: #1e4fba; }
 .btn.danger { background: #ef4444; border-color: #ef4444; }
 .btn.danger:hover { background: #b91c1c; }
+.btn:disabled { opacity: 0.6; cursor: not-allowed; }
 
 /* Loading overlay */
 .loading-overlay {
