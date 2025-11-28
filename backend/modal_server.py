@@ -60,6 +60,7 @@ def fastapi_app():
     import torch
     import numpy as np
     import open3d as o3d
+    import math
 
     web_app = FastAPI()
     web_app.add_middleware(
@@ -176,7 +177,7 @@ def fastapi_app():
         return str(temp_ply_path), camera_pose
 
     # asume que es chiquito
-    async def upload_image(id: str, file: UploadFile = File(...), image_folder="images"):
+    async def upload_image(id: str, file: UploadFile = File(...), image_folder="images", image_folder_full = "all_images"):
         """
             Takes a project id and a file and preprocesses and puts the image 
             into the correct path
@@ -190,6 +191,7 @@ def fastapi_app():
         path = vol_mnt_loc / "backend_data" / "reconstructions" / id / image_folder
         print(f"{Colors.MAGENTA}   Target path: {path}{Colors.RESET}")
         os.makedirs(path, exist_ok=True)
+
         if not os.path.exists(path) or not os.path.isdir(path):
             print(f"{Colors.RED}❌ ERROR: Path does not exist or is not a directory: {path}{Colors.RESET}")
             raise HTTPException(status_code=400,
@@ -232,7 +234,15 @@ def fastapi_app():
         save_start = time.time()
         uuidname = uuid.uuid4()
         save_path = path / f"{uuidname}.png"
+        if image_folder_full is not None:
+            print("saving image in full also")
+            path_full_images = vol_mnt_loc / "backend_data" / "reconstructions" / id / image_folder_full
+            os.makedirs(path_full_images, exist_ok=True)
+            save_path_full = path_full_images / f"{uuidname}.png"
+            img.save(save_path_full, format="PNG")
+
         img.save(save_path, format="PNG")
+
         log_time("Save image to disk", save_start)
         
         commit_start = time.time()
@@ -450,7 +460,7 @@ def fastapi_app():
         # STEP 1: Upload and preprocess thumbnail
         step1_start = time.time()
         volume.reload()
-        uploaded = await upload_image(id, thumbnail, "thumbnails")
+        uploaded = await upload_image(id, thumbnail, "thumbnails",None) #  None should be uploaded to folder_full
         log_time("STEP 1: Upload Thumbnail", step1_start)
         print(f"{Colors.GREEN}✅ Thumbnail uploaded successfully to {uploaded}{Colors.RESET}\n")
         return {"thumbnail_path": str(uploaded)}
@@ -533,6 +543,12 @@ def fastapi_app():
         
         return {"scenes": scene_dicts}
     
+    def should_keyframe(id,max_overtop = 100):
+        path = vol_mnt_loc / "backend_data" / "reconstructions" / id / "all_images"
+        num_images = len([f for f in path.glob("*") if f.is_file()])
+        expected_images = 5*math.log(num_images+1)
+
+
     @web_app.post("/pointcloud/{id}")
     async def new_image(id: str, user_id: str = Form(...), file: UploadFile = File(...), background_tasks: BackgroundTasks = None):
         """
@@ -555,6 +571,10 @@ def fastapi_app():
         # STEP 1: Upload and preprocess image
         step1_start = time.time()
         uploaded = await upload_image(id, file)
+
+        if should_keyframe(id):
+            pass
+
         log_time("STEP 1: Upload Image", step1_start)
         print(f"{Colors.GREEN}✅ Image uploaded successfully to {uploaded}{Colors.RESET}\n")
         
