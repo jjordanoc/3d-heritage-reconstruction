@@ -271,7 +271,7 @@ def fastapi_app():
             # Define paths
             scene_path = Path(vol_mnt_loc) / "backend_data" / "reconstructions" / scene_id
             images_dir = scene_path / "images"
-            sparse_initial_dir = scene_path / "colmap" / "sparse_initial"
+            sparse_initial_dir = scene_path / "colmap" / "sparse"
             gsplat_dir = scene_path / "gsplat"
             result_dir = gsplat_dir / "results"
             
@@ -453,7 +453,7 @@ def fastapi_app():
         
         # Validate prerequisites
         scene_path = Path(vol_mnt_loc) / "backend_data" / "reconstructions" / id
-        sparse_initial_dir = scene_path / "colmap" / "sparse_initial"
+        sparse_initial_dir = scene_path / "colmap" / "sparse"
         sparse_ba_dir = scene_path / "colmap" / "sparse_ba"
         images_dir = scene_path / "images"
         
@@ -593,6 +593,6 @@ def fastapi_app():
                 "scene_id": id,
                 "message": "Gaussian Splatting training not started"
             }
-
+    return web_app
     
 
