@@ -252,7 +252,7 @@ async function handleSubmit() {
       formData.append('thumbnail', resized, resized.name)
     }
 
-    const res = await fetch(`${API_BASE}/scenes`, {
+    const res = await fetch(`${API_BASE}/scene/${encodeURIComponent(sceneName.value)}`, {
       method: 'POST',
       body: formData,
     })
