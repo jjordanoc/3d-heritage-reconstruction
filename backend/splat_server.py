@@ -271,7 +271,7 @@ def fastapi_app():
             # Define paths
             scene_path = Path(vol_mnt_loc) / "backend_data" / "reconstructions" / scene_id
             images_dir = scene_path / "images"
-            sparse_initial_dir = scene_path / "colmap" / "sparse_initial"
+            sparse_initial_dir = scene_path / "colmap" / "sparse"
             gsplat_dir = scene_path / "gsplat"
             result_dir = gsplat_dir / "results"
             
@@ -453,7 +453,7 @@ def fastapi_app():
         
         # Validate prerequisites
         scene_path = Path(vol_mnt_loc) / "backend_data" / "reconstructions" / id
-        sparse_initial_dir = scene_path / "colmap" / "sparse_initial"
+        sparse_initial_dir = scene_path / "colmap" / "sparse"
         sparse_ba_dir = scene_path / "colmap" / "sparse_ba"
         images_dir = scene_path / "images"
         
@@ -593,41 +593,6 @@ def fastapi_app():
                 "scene_id": id,
                 "message": "Gaussian Splatting training not started"
             }
-
-    @web_app.get("/scene/{id}/gsplat/model")
-    async def download_gsplat_model(id: str):
-        """
-        Download the trained .ply file.
-        
-        Args:
-            id: Scene ID
-        
-        Returns:
-            FileResponse with results.ply
-        """
-        endpoint_start = time.time()
-        print(f"\n{'='*80}")
-        print(f"{Colors.CYAN}📥 [GET /scene/{id}/gsplat/model] ENDPOINT CALLED{Colors.RESET}")
-        print(f"{'='*80}\n")
-        
-        results_ply = Path(vol_mnt_loc) / "backend_data" / "reconstructions" / id / "gsplat" / "results.ply"
-        
-        if not results_ply.exists():
-            print(f"{Colors.RED}❌ ERROR: Model file not found at {results_ply}{Colors.RESET}")
-            raise HTTPException(
-                status_code=404,
-                detail=f"Trained model not found for scene {id}. Run training first."
-            )
-        
-        print(f"{Colors.GREEN}✅ Serving model file: {results_ply}{Colors.RESET}")
-        log_time("Endpoint response time", endpoint_start)
-        print(f"{'='*80}\n")
-        
-        return FileResponse(
-            path=results_ply,
-            filename=f"{id}_gaussian_splatting.ply",
-            media_type="application/octet-stream"
-        )
-
     return web_app
+    
 

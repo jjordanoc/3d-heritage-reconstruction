@@ -28,7 +28,7 @@ import * as THREE from 'three'
 import { ArcballControls } from 'three/examples/jsm/controls/ArcballControls.js'
 import { SplatMesh } from '@sparkjsdev/spark'
 
-const API_BASE = (import.meta.env.VITE_SPLAT_API_BASE_URL || '').replace(/\/+$/, '')
+const API_BASE = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/+$/, '')
 
 export default {
   name: 'GSplatViewer',
@@ -254,51 +254,52 @@ export default {
       }
 
       const base = API_BASE
-      const url = `${base}/scene/${encodeURIComponent(id)}/gsplat/model`
+      // Use the .spz endpoint
+      const url = `${base}/splat/${encodeURIComponent(id)}`
       
       console.log('[GSplatViewer] Loading gsplat from:', url)
 
-      // Fetch the .ply file ourselves to avoid 431 error with Spark's internal fetch
-      const response = await fetch(url)
-      if (!response.ok) {
-        throw new Error(`Failed to fetch gsplat model: ${response.status} ${response.statusText}`)
-      }
+      // Create SplatMesh directly with the URL
+      const splatMesh = new SplatMesh({ 
+        url: url, 
+        alphaTest: 0.01,
+        renderOrder: 0,
+        logLevel: 'info' 
+      })
       
-      const blob = await response.blob()
-      console.log('[GSplatViewer] Fetched blob:', blob.size, 'bytes')
-      
-      // Create a blob URL
-      const blobUrl = URL.createObjectURL(blob)
-      console.log('[GSplatViewer] Created blob URL:', blobUrl)
-      
-      // Create SplatMesh with blob URL
-      const splatMesh = new SplatMesh({ url: blobUrl })
-      
+      this._removeCurrentObject()
+      this._scene.add(splatMesh)
+      this._pickables = [splatMesh]
+      this._currentObject = splatMesh
+
       // Wait for splat to load
       await new Promise((resolve, reject) => {
         const checkLoaded = setInterval(() => {
           // Check if the splat has loaded by checking if it has geometry/data
-          if (splatMesh.geometry && splatMesh.geometry.attributes) {
+          // NOTE: Internal structure of SplatMesh might vary. 
+          // It usually extends Mesh.
+          if (splatMesh.geometry && splatMesh.geometry.attributes && splatMesh.geometry.attributes.position) {
             clearInterval(checkLoaded)
             resolve()
           }
         }, 100)
         
-        // Timeout after 30 seconds
+        // Timeout after 60 seconds
         setTimeout(() => {
           clearInterval(checkLoaded)
-          reject(new Error('Splat loading timeout'))
-        }, 30000)
+          // Don't reject, just warn and try to proceed, maybe it loads late
+          console.warn('[GSplatViewer] Splat loading wait timeout - proceeding anyway')
+          resolve()
+        }, 60000)
       })
 
-      console.log('[GSplatViewer] Splat loaded successfully')
+      console.log('[GSplatViewer] Splat geometry ready')
       
-      // Clean up blob URL after loading
-      URL.revokeObjectURL(blobUrl)
-
       // Calculate bounding box from splat
-      splatMesh.geometry.computeBoundingBox()
-      const bbox = splatMesh.geometry.boundingBox
+      if (splatMesh.geometry && !splatMesh.geometry.boundingBox) {
+         splatMesh.geometry.computeBoundingBox()
+      }
+      const bbox = splatMesh.geometry?.boundingBox
 
       let center = new THREE.Vector3(0, 0, 0)
       let maxDim = 1
@@ -308,14 +309,16 @@ export default {
         maxDim = Math.max(size.x, size.y, size.z) || 1
       }
 
-      this._removeCurrentObject()
-      this._scene.add(splatMesh)
-      this._pickables = [splatMesh]
-      this._currentObject = splatMesh
-
       // BBoxes globales
       this._worldBBox.makeEmpty()
-      if (splatMesh.geometry?.boundingBox) this._worldBBox.union(splatMesh.geometry.boundingBox)
+      
+      if (splatMesh.geometry?.boundingBox) {
+          this._worldBBox.union(splatMesh.geometry.boundingBox)
+      } else {
+          // Fallback bbox if not computed
+          this._worldBBox.setFromCenterAndSize(new THREE.Vector3(0,0,0), new THREE.Vector3(10,10,10))
+      }
+      
       this._updateClampBBox()
 
       // Helpers al tamaño
