@@ -53,6 +53,12 @@ app = modal.App("websocket-light", image=image)
 reconstruction_queue = modal.Queue.from_name("reconstruction-queue", create_if_missing=True)
 notification_queue = modal.Queue.from_name("notification-queue", create_if_missing=True)
 reconstruction_state = modal.Dict.from_name("reconstruction-state", create_if_missing=True)
+#reconstruction_state[project_id] = {
+#       "latest_image_id": image_id, 
+#       "timestamp": time.time(),
+#       "status": "processing", # processing means locked
+#       "last_processed_timestamp": current_state.get("last_processed_timestamp", 0) if current_state else 0
+#   }
 
 # Helper to process image (resize)
 def preprocess_image(image_bytes: bytes, target_size: int = 512) -> Image.Image:

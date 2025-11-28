@@ -542,11 +542,17 @@ def fastapi_app():
         return {"scenes": scene_dicts}
     
     
-    def should_keyframe(id,max_overtop = 100):
+    def should_keyframe(id,max_overtop = 0):
         path = vol_mnt_loc / "backend_data" / "reconstructions" / id / "all_images"
+        path_current = vol_mnt_loc / "backend_data" / "reconstructions" / id / "images"
+
         num_images = len([f for f in path.glob("*") if f.is_file()])
-        expected_images = 5*math.log(num_images+1)
-        return num_images > expected_images + max_overtop
+        current_num_images = len([f for f in path_current.glob("*") if f.is_file()])
+        expected_images = 5*math.log2(num_images+1)
+        
+        print(f"Expected {expected_images}, current {current_num_images}")
+
+        return current_num_images > expected_images + max_overtop
 
     @web_app.post("/pointcloud/{id}")
     async def new_image(id: str, user_id: str = Form(...), file: UploadFile = File(...), background_tasks: BackgroundTasks = None):
@@ -572,7 +578,13 @@ def fastapi_app():
         uploaded = await upload_image(id, file)
 
         if should_keyframe(id):
-            pass
+            #trigger a modal function to select keyframes
+            #No lock over the image folder. If some new, better image was uploaded meanwhile, it will be considered in the next round
+            # we care about not loosing this image, but if some other image is lost, it's ok
+            print(f"{Colors.YELLOW}  Triggering keyframe selection for project {id}{Colors.RESET}")
+            keyframer_class = modal.Cls.from_name("resnet-keyframer", "ResNetKeyframer")
+            keyframer = keyframer_class()
+            keyframer.do_selection_in_project.spawn(id,0,10,0.85) # see modal_keyframer.py
         log_time("STEP 1: Upload Image", step1_start)
         print(f"{Colors.GREEN}✅ Image uploaded successfully to {uploaded}{Colors.RESET}\n")
         
