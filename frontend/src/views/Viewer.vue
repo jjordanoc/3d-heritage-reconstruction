@@ -7,6 +7,7 @@
       <template #default>
         <component 
           :is="currentViewerType === 'ply' ? AsyncPLYViewer : AsyncGSplatViewer"
+          :key="currentViewerType"
           ref="viewerRef" 
           @loadComplete="onLoadComplete"
           @model-updated="onModelUpdated"
@@ -67,7 +68,13 @@ const reloading = ref(false)
 
 const route = useRoute()
 const projectId = computed(() => (route.query.id || route.params.id)?.toString())
+
+const props = defineProps({
+  viewType: { type: String, default: 'ply' }
+})
+
 const currentViewerType = computed(() => {
+  if (props.viewType === 'gsplat') return 'gsplat'
   return route.query.view === 'splat' ? 'gsplat' : 'ply'
 })
 
