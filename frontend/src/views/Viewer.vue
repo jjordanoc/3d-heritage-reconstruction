@@ -10,6 +10,9 @@
           ref="viewerRef" 
           @loadComplete="onLoadComplete"
           @model-updated="onModelUpdated"
+          @requestUpload="triggerFileInput"
+          @noPointCloud="onNoPointCloud"
+          @hasPointCloud="onHasPointCloud"
         />
       </template>
       <template #fallback>
@@ -17,22 +20,17 @@
       </template>
     </Suspense>
 
-    <!-- Loading overlay during re-fetch -->
-    <div v-if="reloading" class="loading-overlay">
-      <div class="spinner"></div>
-      <p>Cargando...</p>
-    </div>
+    <!-- 🔹 Input SIEMPRE presente -->
+    <input
+      ref="fileInput"
+      type="file"
+      accept="image/*"
+      @change="onFileSelected"
+      style="display: none"
+    />
 
-    <!-- Overlay inferior -->
-    <div class="upload-bar">
-      <input
-        ref="fileInput"
-        type="file"
-        accept="image/*"
-        @change="onFileSelected"
-        style="display: none"
-      />
-
+    <!-- Overlay inferior: cuando hay nube O cuando hay archivo seleccionado -->
+    <div v-if="!isEmptyScene || selectedFile" class="upload-bar">
       <!-- Cuando hay imagen seleccionada -->
       <div v-if="selectedFile" class="upload-bar__content">
         <div class="upload-bar__file">
@@ -89,7 +87,8 @@ const updateFeedRef = ref(null)
 const fileInput = ref(null)
 const selectedFile = ref(null)
 const uploading = ref(false)
-const reloading = ref(false)
+// Estado: si no hay nube de puntos, ocultamos la barra inferior
+const isEmptyScene = ref(false)
 // const currentViewerType = ref('ply') // Defaulting to PLY, no toggle needed
 
 const route = useRoute()
@@ -116,12 +115,14 @@ function onFileSelected(e) {
 
 function discardFile() {
   selectedFile.value = null
-  fileInput.value.value = ''
+  if (fileInput.value) {
+    fileInput.value.value = ''
+  }
 }
 
 function onLoadComplete() {
   uploading.value = false
-  reloading.value = false
+  // reloading.value = false
 }
 
 function onModelUpdated(metadata) {
@@ -137,8 +138,19 @@ function onModelUpdated(metadata) {
   }
 }
 
+// Recibimos eventos desde PLYViewer sobre si hay o no nube
+function onNoPointCloud() {
+  isEmptyScene.value = true
+}
+
+function onHasPointCloud() {
+  isEmptyScene.value = false
+}
+
 async function uploadFile() {
   if (!selectedFile.value) return
+
+  // Al empezar subida: activar spinner
   uploading.value = true
 
   const id = projectId.value
@@ -149,9 +161,7 @@ async function uploadFile() {
   }
 
   const form = new FormData()
-  form.append('file', selectedFile.value) // backend espera 'file', no 'image'
-  
-  // Add user_id from localStorage
+  form.append('file', selectedFile.value)
   const userId = localStorage.getItem('heritage_user') || 'Guest'
   form.append('user_id', userId)
 
@@ -163,25 +173,17 @@ async function uploadFile() {
 
     if (!res.ok) throw new Error(`Error ${res.status}`)
     
-    // Expect JSON response {"success": true}
     const data = await res.json()
     
     if (data.success) {
-      // NOTE: We don't trigger reload here anymore because the update
-      // comes asynchronously via WebSocket when reconstruction finishes.
-      // We just reset the UI state.
-      // reloading.value = true 
-      // await viewerRef.value?.reloadPointCloud(id)
-      console.log("Upload successful, waiting for WebSocket update...")
-      uploading.value = false
+      console.log('Upload successful, waiting for WebSocket update...')
     }
-    
+
     discardFile()
   } catch (err) {
     console.error(err)
     alert('Error al subir imagen.')
     uploading.value = false
-    reloading.value = false
   }
 }
 </script>
@@ -367,46 +369,6 @@ async function uploadFile() {
   background: rgba(148,163,184,0.12);
   border-color: rgba(148,163,184,0.3);
   box-shadow: 0 0 0 3px rgba(148,163,184,0.25);
-}
-
-/* =========================
-   Loading overlay & spinner
-   ========================= */
-.loading-overlay {
-  position: fixed;
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%);
-  background: rgba(255,255,255,0.96);
-  backdrop-filter: blur(10px);
-  padding: 24px 32px;
-  border-radius: 16px;
-  border: 1px solid rgba(148,163,184,0.45);
-  box-shadow: var(--shadow);
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 12px;
-  z-index: 100;
-}
-
-.loading-overlay p {
-  margin: 0;
-  color: var(--text);
-  font-size: 15px;
-}
-
-.spinner {
-  width: 40px;
-  height: 40px;
-  border: 3px solid rgba(148,163,184,0.3);
-  border-top-color: var(--accent);
-  border-radius: 50%;
-  animation: spin 0.8s linear infinite;
-}
-
-@keyframes spin {
-  to { transform: rotate(360deg); }
 }
 
 /* =========================

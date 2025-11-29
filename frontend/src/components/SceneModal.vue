@@ -33,15 +33,14 @@
         <!-- Imagen miniatura (OPCIONAL) -->
         <div class="field">
           <div class="field-header">
-            <span class="field-label">Imagen miniatura</span>
+            <span class="field-label">Imagen miniatura (obligatoria)</span>
             <button
               type="button"
-              class="link-btn"
-              @click="toggleThumbnail"
+              class="dropzone"
+              :class="{ 'dropzone--filled': !!previewUrl }"
+              @click="triggerFileInput"
             >
-              {{ showThumbnail
-                ? 'Quitar miniatura'
-                : 'Añadir miniatura (opcional)' }}
+              Seleccionar imagen
             </button>
           </div>
 
@@ -116,7 +115,7 @@
           <button
             type="submit"
             class="btn"
-            :disabled="isSubmitting || !sceneName"
+            :disabled="isSubmitting || !sceneName || !file"
           >
             <span v-if="!isSubmitting">Crear</span>
             <span v-else>Creando…</span>
@@ -144,7 +143,7 @@ const fileInput = ref(null)
 const showThumbnail = ref(false)
 
 async function resizeImageTo256(inputFile) {
-  const SIZE = 256
+  const SIZE = 512
 
   return new Promise((resolve, reject) => {
     const reader = new FileReader()
@@ -162,13 +161,16 @@ async function resizeImageTo256(inputFile) {
           return
         }
 
-        const ratio = Math.min(SIZE / img.width, SIZE / img.height)
-        const newWidth = img.width * ratio
-        const newHeight = img.height * ratio
+        const scale = Math.max(SIZE / img.width, SIZE / img.height)
+        const newWidth = img.width * scale
+        const newHeight = img.height * scale
+
         const dx = (SIZE - newWidth) / 2
         const dy = (SIZE - newHeight) / 2
 
-        ctx.clearRect(0, 0, SIZE, SIZE)
+        ctx.fillStyle = '#f3f4f6'
+        ctx.fillRect(0, 0, SIZE, SIZE)
+
         ctx.drawImage(img, dx, dy, newWidth, newHeight)
 
         canvas.toBlob(
@@ -177,14 +179,7 @@ async function resizeImageTo256(inputFile) {
               reject(new Error('No se pudo generar el blob de la imagen'))
               return
             }
-
-            const resizedFile = new File(
-              [blob],
-              inputFile.name.replace(/\.\w+$/, '.png'),
-              { type: 'image/png' }
-            )
-
-            resolve(resizedFile)
+            resolve(blob)
           },
           'image/png',
           0.95
@@ -205,40 +200,54 @@ function handleClose() {
   emit('close')
 }
 
-function toggleThumbnail() {
-  showThumbnail.value = !showThumbnail.value
-  if (!showThumbnail.value) {
-    clearImage()
-  }
-}
-
 function triggerFileInput() {
   fileInput.value?.click()
-}
-
-function onFileChange(event) {
-  const selected = event.target.files?.[0]
-  if (!selected) return
-
-  file.value = selected
-
-  if (previewUrl.value) URL.revokeObjectURL(previewUrl.value)
-  previewUrl.value = URL.createObjectURL(selected)
 }
 
 function clearImage() {
   file.value = null
   if (previewUrl.value) {
-    URL.revokeObjectURL(previewUrl.value)
+    window.URL.revokeObjectURL(previewUrl.value)
   }
   previewUrl.value = ''
   if (fileInput.value) {
     fileInput.value.value = ''
   }
+  showThumbnail.value = false
+}
+
+async function onFileChange(event) {
+  const selected = event.target.files?.[0]
+  if (!selected) return
+
+  try {
+    const resizedBlob = await resizeImageTo256(selected)
+
+    // guardamos el blob 256x256
+    file.value = resizedBlob
+
+    // preview de la versión reescalada
+    if (previewUrl.value) {
+      window.URL.revokeObjectURL(previewUrl.value)
+    }
+    previewUrl.value = window.URL.createObjectURL(resizedBlob)
+
+    // mostramos el bloque de preview si estaba oculto
+    showThumbnail.value = true
+  } catch (err) {
+    console.error('Error al procesar la imagen:', err)
+    errorMessage.value = 'No se pudo procesar la imagen seleccionada.'
+    file.value = null
+  }
 }
 
 async function handleSubmit() {
   if (!sceneName.value) return
+
+  if (!file.value) {
+    errorMessage.value = 'Debes seleccionar una imagen miniatura antes de crear la escena.'
+    return
+  }
 
   isSubmitting.value = true
   errorMessage.value = ''
@@ -247,15 +256,16 @@ async function handleSubmit() {
     const formData = new FormData()
     formData.append('name', sceneName.value)
 
-    if (file.value) {
-      const resized = await resizeImageTo256(file.value)
-      formData.append('thumbnail', resized, resized.name)
-    }
+    const filename = `${sceneName.value || 'thumbnail'}.png`
+    formData.append('thumbnail', file.value, filename)
 
-    const res = await fetch(`${API_BASE}/scene/${encodeURIComponent(sceneName.value)}`, {
-      method: 'POST',
-      body: formData,
-    })
+    const res = await fetch(
+      `${API_BASE}/scene/${encodeURIComponent(sceneName.value)}`,
+      {
+        method: 'POST',
+        body: formData,
+      }
+    )
 
     if (!res.ok) {
       throw new Error(`Error HTTP ${res.status}`)

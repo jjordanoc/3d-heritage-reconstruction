@@ -1,7 +1,7 @@
 <template>
   <div ref="container" class="ply-root">
-    <!-- HUD / Controles -->
-    <div class="hud">
+    <!-- HUD / Controles (solo si hay nube de puntos) -->
+    <div class="hud" v-if="!isEmptyPointCloud">
       <!-- Solo desktop: velocidad para movimiento con teclado -->
       <div class="row" v-if="!isMobile">
         <label>Velocidad (teclado)</label>
@@ -61,6 +61,35 @@
           <strong>Tips:</strong>
           Doble clic = fijar pivote · F = encuadrar · Shift = x3 · Ctrl = x0.25
         </div>
+      </div>
+    </div>
+
+    <!-- Overlay de carga de la nube de puntos -->
+    <div v-if="isLoadingPointCloud" class="ply-loading">
+      <div class="ply-loading-card">
+        <div class="ply-spinner"></div>
+        <div class="ply-loading-text">
+          <p class="ply-loading-title">Cargando nube de puntos…</p>
+          <p class="ply-loading-sub">Esto puede tardar unos segundos.</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Estado vacío: no hay nube de puntos todavía -->
+    <div v-else-if="isEmptyPointCloud" class="ply-empty">
+      <div class="ply-empty-card">
+        <p class="ply-empty-title">Sé el primero en subir una imagen</p>
+        <p class="ply-empty-sub">
+          Aún no se ha generado una nube de puntos para esta escena. Sube una imagen
+          para crear la primera reconstrucción 3D.
+        </p>
+        <button
+          type="button"
+          class="ply-empty-btn"
+          @click="$emit('requestUpload')"
+        >
+          Cargar imagen
+        </button>
       </div>
     </div>
   </div>
@@ -172,6 +201,12 @@ export default {
 
       // Modo mobile
       isMobile: false,
+
+      // Loader de nube de puntos
+      isLoadingPointCloud: true,
+
+      // Estado: no hay nube de puntos aún
+      isEmptyPointCloud: false,
     }
   },
 
@@ -388,6 +423,8 @@ export default {
       this.initWebSocket(String(id))
     } else {
       console.warn('[PLYViewer] No id in route (query/params).')
+      // Si no hay id, no hay nada que cargar -> quitamos loader
+      this.isLoadingPointCloud = false
     }
 
     // Watch cambios de id
@@ -454,6 +491,15 @@ export default {
       }
     },
 
+    _handleNoPointCloud() {
+      console.info('[PLYViewer] No point cloud found for this scene.')
+      this._removeCurrentObject()
+      this.isEmptyPointCloud = true
+      this._worldBBox.makeEmpty()
+      this._updateClampBBox()
+      this.$emit('noPointCloud')
+    },
+
     async loadById(id, preserveCamera = false) {
       // Guardar cámara si queremos preservar
       let savedCameraPos = null
@@ -463,147 +509,181 @@ export default {
         savedCameraTarget = this._orbit.target.clone()
       }
 
-      const base = API_BASE
-      const url = `${base}/pointcloud/${encodeURIComponent(id)}/latest`
-      const res = await fetch(url)
-      if (!res.ok) throw new Error(`HTTP ${res.status} al pedir ${url}`)
+      // Mostrar loader
+      this.isLoadingPointCloud = true
+      this.isEmptyPointCloud = false
+      
 
-      const ctype = res.headers.get('content-type') || ''
-      let cameraCv = null
-      let plyBuffer = null
-      let plyUrl = null
+      try {
+        const base = API_BASE
+        const url = `${base}/pointcloud/${encodeURIComponent(id)}/latest`
+        const res = await fetch(url)
+        if (!res.ok) throw new Error(`HTTP ${res.status} al pedir ${url}`)
 
-      if (ctype.includes('multipart/form-data')) {
-        const buffer = await res.arrayBuffer()
-        const parsed = parseMultipartResponse(buffer, ctype)
-        if (parsed.pointcloud) plyBuffer = parsed.pointcloud
-        if (parsed.camera_pose) {
-          try {
-            const cameraPose = JSON.parse(parsed.camera_pose)
-            if (
-              Array.isArray(cameraPose) &&
-              cameraPose.length === 4 &&
-              cameraPose.every(r => Array.isArray(r) && r.length === 4)
-            ) {
-              cameraCv = cameraPose
-            }
-          } catch (e) {
-            console.warn('[PLYViewer] Failed to parse camera_pose from multipart:', e)
-          }
-        }
-      } else if (ctype.includes('application/json')) {
-        const json = await res.json()
-        if (typeof json.pointcloud === 'string') {
-          if (json.pointcloud.startsWith('http') || json.pointcloud.startsWith('/')) {
-            plyUrl = json.pointcloud
-          } else if (
-            json.pointcloud.startsWith('data:') ||
-            /^[A-Za-z0-9+/]+=*$/.test(json.pointcloud)
+        const ctype = res.headers.get('content-type') || ''
+        let cameraCv = null
+        let plyBuffer = null
+        let plyUrl = null
+
+        if (ctype.includes('application/json')) {
+          const json = await res.json()
+
+          // Caso especial: {"error":"Point cloud file not found."}
+          if (
+            json &&
+            typeof json.error === 'string' &&
+            json.error.toLowerCase().includes('point cloud file not found')
           ) {
-            plyBuffer = base64ToArrayBuffer(json.pointcloud)
+            this._handleNoPointCloud()
+            this.$emit('loadComplete')
+            return
+          }
+
+          if (typeof json.pointcloud === 'string') {
+            if (json.pointcloud.startsWith('http') || json.pointcloud.startsWith('/')) {
+              plyUrl = json.pointcloud
+            } else if (
+              json.pointcloud.startsWith('data:') ||
+              /^[A-Za-z0-9+/]+=*$/.test(json.pointcloud)
+            ) {
+              plyBuffer = base64ToArrayBuffer(json.pointcloud)
+            }
+          } else {
+            console.warn('[PLYViewer] pointcloud no es string; espera URL o base64.')
+          }
+          if (
+            Array.isArray(json.camera_pose) &&
+            json.camera_pose.length === 4 &&
+            json.camera_pose.every(r => Array.isArray(r) && r.length === 4)
+          ) {
+            cameraCv = json.camera_pose
+          }
+        } else if (ctype.includes('multipart/form-data')) {
+          const buffer = await res.arrayBuffer()
+          const parsed = parseMultipartResponse(buffer, ctype)
+          if (parsed.pointcloud) plyBuffer = parsed.pointcloud
+          if (parsed.camera_pose) {
+            try {
+              const cameraPose = JSON.parse(parsed.camera_pose)
+              if (
+                Array.isArray(cameraPose) &&
+                cameraPose.length === 4 &&
+                cameraPose.every(r => Array.isArray(r) && r.length === 4)
+              ) {
+                cameraCv = cameraPose
+              }
+            } catch (e) {
+              console.warn('[PLYViewer] Failed to parse camera_pose from multipart:', e)
+            }
           }
         } else {
-          console.warn('[PLYViewer] pointcloud no es string; espera URL o base64.')
+          plyBuffer = await res.arrayBuffer()
         }
-        if (
-          Array.isArray(json.camera_pose) &&
-          json.camera_pose.length === 4 &&
-          json.camera_pose.every(r => Array.isArray(r) && r.length === 4)
-        ) {
-          cameraCv = json.camera_pose
+
+        const loader = new PLYLoader()
+        let geometry
+        if (plyUrl) {
+          geometry = await new Promise((resolve, reject) => {
+            loader.load(plyUrl, g => resolve(g), undefined, err => reject(err))
+          })
+        } else if (plyBuffer) {
+          geometry = loader.parse(plyBuffer)
+        } else {
+          // Si llegamos aquí sin datos, tratamos como "no hay nube"
+          this._handleNoPointCloud()
+          this.$emit('loadComplete')
+          return
         }
-      } else {
-        plyBuffer = await res.arrayBuffer()
-      }
 
-      const loader = new PLYLoader()
-      let geometry
-      if (plyUrl) {
-        geometry = await new Promise((resolve, reject) => {
-          loader.load(plyUrl, g => resolve(g), undefined, err => reject(err))
-        })
-      } else if (plyBuffer) {
-        geometry = loader.parse(plyBuffer)
-      } else {
-        throw new Error('[PLYViewer] No se pudo obtener pointcloud (ni URL ni buffer)')
-      }
+        geometry.computeVertexNormals?.()
+        geometry.computeBoundingBox?.()
 
-      geometry.computeVertexNormals?.()
-      geometry.computeBoundingBox?.()
+        const bbox = geometry.boundingBox
+        let maxDim = 1
+        let pointSize = 0.02
+        if (bbox) {
+          const size = bbox.getSize(new THREE.Vector3())
+          maxDim = Math.max(size.x, size.y, size.z) || 1
+          pointSize = maxDim * 0.005
+        }
 
-      const bbox = geometry.boundingBox
-      let center = new THREE.Vector3(0, 0, 0)
-      let maxDim = 1
-      let pointSize = 0.02
-      if (bbox) {
-        center = bbox.getCenter(new THREE.Vector3())
-        const size = bbox.getSize(new THREE.Vector3())
-        maxDim = Math.max(size.x, size.y, size.z) || 1
-        pointSize = maxDim * 0.005
-      }
+        let object
+        if (geometry.getAttribute && geometry.getAttribute('color')) {
+          const mat = new THREE.PointsMaterial({
+            size: pointSize,
+            vertexColors: true,
+            sizeAttenuation: true,
+          })
+          object = new THREE.Points(geometry, mat)
+          object.raycast = THREE.Points.prototype.raycast
+        } else {
+          const mat = new THREE.MeshStandardMaterial({
+            color: 0xaaaaaa,
+            flatShading: false,
+          })
+          object = new THREE.Mesh(geometry, mat)
+        }
 
-      let object
-      if (geometry.getAttribute && geometry.getAttribute('color')) {
-        const mat = new THREE.PointsMaterial({
-          size: pointSize,
-          vertexColors: true,
-          sizeAttenuation: true,
-        })
-        object = new THREE.Points(geometry, mat)
-        object.raycast = THREE.Points.prototype.raycast
-      } else {
-        const mat = new THREE.MeshStandardMaterial({
-          color: 0xaaaaaa,
-          flatShading: false,
-        })
-        object = new THREE.Mesh(geometry, mat)
-      }
+        this._removeCurrentObject()
+        this._scene.add(object)
+        this._pickables = [object]
+        this._currentObject = object
+        this.isEmptyPointCloud = false
+        this.$emit('hasPointCloud')   // 👈 avisamos al padre que ya hay nube
 
-      this._removeCurrentObject()
-      this._scene.add(object)
-      this._pickables = [object]
-      this._currentObject = object
+        // BBoxes
+        this._worldBBox.makeEmpty()
+        if (object.geometry?.boundingBox) {
+          const bb = object.geometry.boundingBox.clone()
+          this._worldBBox.union(bb)
+        }
+        this._updateClampBBox() // recalcular bbox extendido
 
-      // BBoxes
-      this._worldBBox.makeEmpty()
-      if (object.geometry?.boundingBox) {
-        const bb = object.geometry.boundingBox.clone()
-        this._worldBBox.union(bb)
-      }
-      this._updateClampBBox() // recalcular bbox extendido
+        // Helpers al tamaño
+        this._recalibrateHelpers(maxDim)
 
-      // Helpers al tamaño
-      this._recalibrateHelpers(maxDim)
-
-      // near/far y distancias
-      this._camera.near = Math.max(maxDim / 1000, 0.001)
-      this._camera.far = Math.max(maxDim * 100, 10)
-      this._camera.updateProjectionMatrix()
-      if ('minDistance' in this._orbit) {
-        this._orbit.minDistance = Math.max(maxDim * 0.02, 0.001)
-      }
-      if ('maxDistance' in this._orbit) {
-        this._orbit.maxDistance = Math.max(maxDim * 20, 10)
-      }
-
-      // Cámara
-      if (preserveCamera && savedCameraPos && savedCameraTarget) {
-        this._camera.matrixAutoUpdate = true
-        this._camera.position.copy(savedCameraPos)
-        this._orbit.target.copy(savedCameraTarget)
+        // near/far y distancias
+        this._camera.near = Math.max(maxDim / 1000, 0.001)
+        this._camera.far = Math.max(maxDim * 100, 10)
         this._camera.updateProjectionMatrix()
-        this._orbit.update()
-      } else if (cameraCv) {
-        this._applyOpenCVCameraToWorld(cameraCv, true)
-      } else {
-        this._frameToBBox()
+        if ('minDistance' in this._orbit) {
+          this._orbit.minDistance = Math.max(maxDim * 0.02, 0.001)
+        }
+        if ('maxDistance' in this._orbit) {
+          this._orbit.maxDistance = Math.max(maxDim * 20, 10)
+        }
+
+        // Cámara
+        if (preserveCamera && savedCameraPos && savedCameraTarget) {
+          this._camera.matrixAutoUpdate = true
+          this._camera.position.copy(savedCameraPos)
+          this._orbit.target.copy(savedCameraTarget)
+          this._camera.updateProjectionMatrix()
+          this._orbit.update()
+        } else if (cameraCv) {
+          this._applyOpenCVCameraToWorld(cameraCv, true)
+        } else {
+          this._frameToBBox()
+        }
+        this._updatePivotViz()
+
+        // Avisar al padre (Viewer.vue) que la carga terminó
+        this.$emit('loadComplete')
+      } catch (e) {
+        console.error('[PLYViewer] Error cargando nube de puntos:', e)
+      } finally {
+        // Siempre quitamos el loader aunque haya error
+        this.isLoadingPointCloud = false
       }
-      this._updatePivotViz()
     },
 
     async addIncrementalPoints(arrayBuffer, contentType) {
       let plyBuffer = null
       let cameraCv = null
+
+      // En cuanto llegan puntos incrementales, ya no es "escena vacía"
+      this.isEmptyPointCloud = false
+      this.$emit('hasPointCloud')
 
       if (contentType.includes('multipart/form-data')) {
         const parsed = parseMultipartResponse(arrayBuffer, contentType)
@@ -906,6 +986,10 @@ export default {
       const base = API_BASE
       const url = `${base}/pointcloud/${encodeURIComponent(id)}/latest`
 
+      // Mostrar loader también durante smartReload
+      this.isLoadingPointCloud = true
+      this.isEmptyPointCloud = false
+
       try {
         const res = await fetch(url)
         if (!res.ok) throw new Error(`HTTP ${res.status}`)
@@ -914,12 +998,20 @@ export default {
         let plyBuffer = null
         let plyUrl = null
 
-        if (ctype.includes('multipart/form-data')) {
-          const buffer = await res.arrayBuffer()
-          const parsed = parseMultipartResponse(buffer, ctype)
-          if (parsed.pointcloud) plyBuffer = parsed.pointcloud
-        } else if (ctype.includes('application/json')) {
+        if (ctype.includes('application/json')) {
           const json = await res.json()
+
+          if (
+            json &&
+            typeof json.error === 'string' &&
+            json.error.toLowerCase().includes('point cloud file not found')
+          ) {
+            this._handleNoPointCloud()
+            this.$emit('loadComplete')
+            console.log('[PLYViewer] Smart reload: no point cloud (empty scene)')
+            return
+          }
+
           if (typeof json.pointcloud === 'string') {
             if (json.pointcloud.startsWith('http') || json.pointcloud.startsWith('/')) {
               plyUrl = json.pointcloud
@@ -930,6 +1022,10 @@ export default {
               plyBuffer = base64ToArrayBuffer(json.pointcloud)
             }
           }
+        } else if (ctype.includes('multipart/form-data')) {
+          const buffer = await res.arrayBuffer()
+          const parsed = parseMultipartResponse(buffer, ctype)
+          if (parsed.pointcloud) plyBuffer = parsed.pointcloud
         } else {
           plyBuffer = await res.arrayBuffer()
         }
@@ -943,7 +1039,9 @@ export default {
         } else if (plyBuffer) {
           geometry = loader.parse(plyBuffer)
         } else {
-          throw new Error('No data found')
+          this._handleNoPointCloud()
+          this.$emit('loadComplete')
+          return
         }
 
         geometry.computeVertexNormals?.()
@@ -978,6 +1076,8 @@ export default {
         this._scene.add(newObject)
         this._pickables = [newObject]
         this._currentObject = newObject
+        this.isEmptyPointCloud = false
+        this.$emit('hasPointCloud')   // 👈 después de smart reload también
 
         this._worldBBox.makeEmpty()
         if (newObject.geometry?.boundingBox) {
@@ -993,9 +1093,14 @@ export default {
           this.$emit('model-updated', { user_id: 'System', image_id: 'Update' })
         }
 
+        // Avisamos también que terminó la carga para que Viewer.vue resetee estados
+        this.$emit('loadComplete')
+
         console.log('[PLYViewer] Smart reload complete')
       } catch (e) {
         console.error('[PLYViewer] Smart reload failed:', e)
+      } finally {
+        this.isLoadingPointCloud = false
       }
     },
 
@@ -1327,6 +1432,154 @@ export default {
   transform: translateY(-0.5px);
 }
 
+/* ===== Loader de nube de puntos ===== */
+.ply-loading {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none; /* no bloquea toda la escena */
+}
+
+.ply-loading-card {
+  pointer-events: auto; /* permite hover si quieres en el card */
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px 11px;
+  border-radius: 18px;
+  background:
+    radial-gradient(
+      140% 160% at 0% 0%,
+      rgba(124, 172, 248, 0.22),
+      transparent 55%
+    ),
+    radial-gradient(
+      140% 160% at 100% 0%,
+      rgba(155, 140, 242, 0.2),
+      transparent 55%
+    ),
+    linear-gradient(180deg, #f9fafb, #ffffff);
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  box-shadow: 0 16px 40px rgba(15, 23, 42, 0.16);
+  backdrop-filter: blur(10px) saturate(150%);
+  color: #0f172a;
+  font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto,
+    'Helvetica Neue', Arial, 'Noto Sans', 'Liberation Sans', sans-serif;
+  font-size: 12px;
+}
+
+.ply-spinner {
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  border-radius: 999px;
+  border: 2px solid rgba(148, 163, 184, 0.4);
+  border-top-color: #2563eb;
+  border-right-color: #7c3aed;
+  animation: ply-spin 0.9s linear infinite;
+}
+
+@keyframes ply-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.ply-loading-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.ply-loading-title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.ply-loading-sub {
+  margin: 0;
+  font-size: 11px;
+  color: #475569;
+}
+
+/* ===== Estado vacío ===== */
+.ply-empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.ply-empty-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 18px 14px;
+  border-radius: 18px;
+  background:
+    radial-gradient(
+      140% 160% at 0% 0%,
+      rgba(124, 172, 248, 0.22),
+      transparent 55%
+    ),
+    radial-gradient(
+      140% 160% at 100% 0%,
+      rgba(155, 140, 242, 0.2),
+      transparent 55%
+    ),
+    linear-gradient(180deg, #f9fafb, #ffffff);
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  box-shadow: 0 16px 40px rgba(15, 23, 42, 0.16);
+  backdrop-filter: blur(10px) saturate(150%);
+  color: #0f172a;
+
+  max-width: 340px;
+  width: min(340px, 85vw);   /* en desktop no se pasa de 340, en mobile usa % de pantalla */
+  text-align: center;
+  align-items: center;
+}
+
+.ply-empty-title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.ply-empty-sub {
+  margin: 0;
+  font-size: 11px;
+  color: #475569;
+}
+
+.ply-empty-btn {
+  align-self: center;
+  margin-top: 8px;
+  padding: 5px 12px;
+  border-radius: 999px;
+  border: none;
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  background: linear-gradient(135deg, #2563eb, #7c3aed);
+  color: #f9fafb;
+  box-shadow: 0 6px 14px rgba(37, 99, 235, 0.35);
+  transition:
+    transform 0.15s ease,
+    box-shadow 0.15s ease,
+    filter 0.15s ease;
+}
+
+.ply-empty-btn:hover,
+.ply-empty-btn:focus-visible {
+  transform: translateY(-0.5px);
+  box-shadow: 0 8px 20px rgba(37, 99, 235, 0.45);
+  filter: brightness(1.02);
+}
+
 /* Mobile tweaks */
 @media (max-width: 768px) {
   .hud {
@@ -1351,6 +1604,11 @@ export default {
   .hud-btn {
     font-size: 11px;
     padding: 4px 8px;
+  }
+
+  .ply-empty-card {
+    max-width: 90vw;
+    width: 90vw;
   }
 }
 </style>
