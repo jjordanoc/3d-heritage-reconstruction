@@ -50,6 +50,7 @@
             type="file"
             class="file-input-native"
             accept="image/*"
+            :capture="captureAttr"
             @change="onFileChange"
           />
 
@@ -128,6 +129,9 @@
 
 <script setup>
 import { ref } from 'vue'
+
+const isAndroid = typeof navigator !== 'undefined' && /Android/i.test(navigator.userAgent || '')
+const captureAttr = isAndroid ? 'environment' : undefined
 
 const emit = defineEmits(['close', 'created'])
 
