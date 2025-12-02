@@ -1,18 +1,19 @@
 <template>
   <div class="page">
-    <!-- Update Feed (replaces Viewer Toggle) -->
+    <!-- Update Feed -->
     <UpdateFeed ref="updateFeedRef" v-if="projectId" :project-id="projectId" />
 
     <Suspense>
       <template #default>
-        <component 
+        <component
           :is="AsyncPLYViewer"
-          ref="viewerRef" 
+          ref="viewerRef"
           @loadComplete="onLoadComplete"
           @model-updated="onModelUpdated"
           @requestUpload="triggerFileInput"
           @noPointCloud="onNoPointCloud"
           @hasPointCloud="onHasPointCloud"
+          :first-scene-processing="firstSceneProcessing"
         />
       </template>
       <template #fallback>
@@ -20,18 +21,25 @@
       </template>
     </Suspense>
 
-    <!-- 🔹 Input SIEMPRE presente -->
+    <!-- Input SIEMPRE presente -->
     <input
       ref="fileInput"
       type="file"
       accept="image/*"
+      :capture="captureAttr"
       @change="onFileSelected"
       style="display: none"
     />
 
-    <!-- Overlay inferior: cuando hay nube O cuando hay archivo seleccionado -->
-    <div v-if="!isEmptyScene || selectedFile" class="upload-bar">
-      <!-- Cuando hay imagen seleccionada -->
+    <!-- Barra inferior:
+         - hay nube (!isEmptyScene)
+         - o hay archivo seleccionado
+         - o se está procesando la primera imagen -->
+    <div
+      v-if="!isEmptyScene || selectedFile || firstSceneProcessing"
+      class="upload-bar"
+    >
+      <!-- Modo: archivo seleccionado -->
       <div v-if="selectedFile" class="upload-bar__content">
         <div class="upload-bar__file">
           <span class="upload-bar__label">Imagen seleccionada</span>
@@ -60,18 +68,41 @@
         </div>
       </div>
 
-      <!-- Cuando NO hay imagen seleccionada -->
-      <div v-else class="upload-bar__content upload-bar__content--center">
-        <button
-          @click="triggerFileInput"
-          class="btn small"
-          type="button"
-        >
-          Cargar imagen
-        </button>
+      <!-- Modo: sin archivo seleccionado -->
+      <div
+        v-else
+        class="upload-bar__content upload-bar__content--compact"
+      >
+        <!-- Estado: procesando PRIMERA imagen -->
+        <template v-if="firstSceneProcessing">
+          <div class="upload-bar__processing">
+            <div class="upload-bar__spinner"></div>
+            <span class="upload-bar__processing-title">
+              Procesando la primera imagen…
+            </span>
+          </div>
+
+          <button
+            @click="triggerFileInput"
+            class="btn small secondary"
+            type="button"
+          >
+            Cargar imagen
+          </button>
+        </template>
+
+        <!-- Estado normal: solo botón -->
+        <template v-else>
+          <button
+            @click="triggerFileInput"
+            class="btn small"
+            type="button"
+          >
+            Cargar imagen
+          </button>
+        </template>
       </div>
     </div>
-
   </div>
 </template>
 
@@ -81,18 +112,22 @@ import { useRoute } from 'vue-router'
 import UpdateFeed from '@/components/UpdateFeed.vue'
 
 const AsyncPLYViewer = defineAsyncComponent(() => import('@/components/PLYViewer.vue'))
-// const AsyncGSplatViewer = defineAsyncComponent(() => import('@/components/GSplatViewer.vue')) // Unused
+
 const viewerRef = ref(null)
 const updateFeedRef = ref(null)
 const fileInput = ref(null)
 const selectedFile = ref(null)
 const uploading = ref(false)
-// Estado: si no hay nube de puntos, ocultamos la barra inferior
+
 const isEmptyScene = ref(false)
-// const currentViewerType = ref('ply') // Defaulting to PLY, no toggle needed
+const firstSceneProcessing = ref(false)
+const hasPointCloudEver = ref(false)
 
 const route = useRoute()
 const projectId = computed(() => (route.query.id || route.params.id)?.toString())
+
+const isAndroid = /Android/i.test(navigator.userAgent || '')
+const captureAttr = isAndroid ? 'environment' : undefined
 
 onMounted(() => {
   document.body.classList.add('no-scroll')
@@ -101,7 +136,6 @@ onUnmounted(() => {
   document.body.classList.remove('no-scroll')
 })
 
-// API base
 const API_BASE = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/+$/, '')
 
 function triggerFileInput() {
@@ -122,14 +156,11 @@ function discardFile() {
 
 function onLoadComplete() {
   uploading.value = false
-  // reloading.value = false
 }
 
 function onModelUpdated(metadata) {
   if (updateFeedRef.value && metadata) {
-    // Normalize metadata: might be an array or an object
     const updates = Array.isArray(metadata) ? metadata : [metadata]
-    
     updates.forEach(meta => {
       const userId = meta.user_id || 'System'
       const imageId = meta.image_id || 'Update'
@@ -138,19 +169,20 @@ function onModelUpdated(metadata) {
   }
 }
 
-// Recibimos eventos desde PLYViewer sobre si hay o no nube
 function onNoPointCloud() {
   isEmptyScene.value = true
+  // firstSceneProcessing se controla solo desde el flujo de subida
 }
 
 function onHasPointCloud() {
   isEmptyScene.value = false
+  firstSceneProcessing.value = false
+  hasPointCloudEver.value = true
 }
 
 async function uploadFile() {
-  if (!selectedFile.value) return
+  if (!selectedFile.value || uploading.value) return
 
-  // Al empezar subida: activar spinner
   uploading.value = true
 
   const id = projectId.value
@@ -172,9 +204,16 @@ async function uploadFile() {
     })
 
     if (!res.ok) throw new Error(`Error ${res.status}`)
-    
+
     const data = await res.json()
-    
+
+    // Si es la primera vez que esta escena tendrá nube,
+    // activamos el mensaje de "procesando primera imagen"
+    if (data.success && !hasPointCloudEver.value) {
+      firstSceneProcessing.value = true
+      isEmptyScene.value = true
+    }
+
     if (data.success) {
       console.log('Upload successful, waiting for WebSocket update...')
     }
@@ -183,6 +222,7 @@ async function uploadFile() {
   } catch (err) {
     console.error(err)
     alert('Error al subir imagen.')
+  } finally {
     uploading.value = false
   }
 }
@@ -195,7 +235,6 @@ async function uploadFile() {
   width: 100vw;
   height: 100vh;
 
-  /* Tokens claros (alineado con Home.vue) */
   --bg: #f3f4ff;
   --bg-soft: #fbfdff;
   --text: #0f172a;
@@ -216,53 +255,44 @@ async function uploadFile() {
   font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
 }
 
-/* Texto de carga (fallback Suspense) */
 .loading {
   color: var(--muted);
   font-size: 14px;
 }
 
-/* =========================
-   Contenedor de la pill
-   (solo posiciona, sin ancho)
-   ========================= */
+/* Contenedor de la pill inferior */
 .upload-bar {
   position: fixed;
   left: 50%;
-  bottom: max(12px, env(safe-area-inset-bottom));
+  bottom: max(10px, env(safe-area-inset-bottom));
   transform: translateX(-50%);
   z-index: 10;
-
-  /* que el contenedor NO tenga fondo ni ancho extra */
   background: transparent;
-  border: none;
-  box-shadow: none;
-  padding: 0;
-  width: auto;
+  pointer-events: none; /* el contenido interior sí tiene pointer-events */
 }
 
-/* Pill real: se ajusta al contenido */
+/* Pill real */
 .upload-bar__content {
+  pointer-events: auto;
   display: inline-flex;
   align-items: center;
-  justify-content: space-between;
   gap: 8px;
 
-  max-width: min(420px, 90vw);
+  max-width: min(360px, 92vw);
   padding: 6px 10px;
   border-radius: 999px;
 
-  background:
-    radial-gradient(120% 180% at 0% 0%, rgba(124,172,248,0.14), transparent 55%),
-    radial-gradient(120% 180% at 100% 0%, rgba(155,140,242,0.14), transparent 55%),
-    linear-gradient(180deg, #f9fafb, #ffffff);
-  border: 1px solid rgba(148,163,184,0.35);
-  box-shadow: var(--shadow);
-  backdrop-filter: blur(12px) saturate(150%);
+  background: rgba(15, 23, 42, 0.9);
+  border: 1px solid rgba(148, 163, 184, 0.65);
+  box-shadow: 0 12px 26px rgba(15, 23, 42, 0.45);
+  color: #e5e7eb;
+  backdrop-filter: blur(10px);
+  font-size: 12px;
 }
 
-.upload-bar__content--center {
-  justify-content: center;
+/* versión más compacta cuando no mostramos info de archivo */
+.upload-bar__content--compact {
+  padding: 5px 10px;
 }
 
 /* Info de archivo */
@@ -275,22 +305,20 @@ async function uploadFile() {
 }
 
 .upload-bar__label {
-  font-size: 11px;
-  color: var(--muted);
-  opacity: 0.9;
+  font-size: 10px;
+  color: #94a3b8;
 }
 
 .upload-bar__name {
-  font-size: 12px;
-  color: var(--text);
+  font-size: 11px;
+  color: #e5e7eb;
   font-weight: 500;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  max-width: 140px; /* evita que agrande demasiado la pill */
+  max-width: 150px;
 }
 
-/* Acciones: botones a la derecha, pegaditos */
 .upload-bar__actions {
   display: flex;
   align-items: center;
@@ -298,28 +326,21 @@ async function uploadFile() {
   flex-shrink: 0;
 }
 
-/* =========================
-   Botones claros
-   ========================= */
+/* Botones */
 .btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 4px;
-
-  padding: 5px 10px;
-  border-radius: 10px;
-
-  border: 1px solid rgba(148,163,184,0.55);
-  background:
-    linear-gradient(180deg, rgba(255,255,255,0.98), rgba(248,250,252,0.9));
-  color: var(--text);
-
-  font-size: 12px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(148, 163, 184, 0.7);
+  background: rgba(15, 23, 42, 0.9);
+  color: #e5e7eb;
+  font-size: 11px;
   line-height: 1.2;
   cursor: pointer;
   outline: none;
-
   transition:
     transform 0.14s ease,
     box-shadow 0.14s ease,
@@ -334,8 +355,8 @@ async function uploadFile() {
 .btn:hover,
 .btn:focus-visible {
   border-color: var(--ring);
-  box-shadow: 0 0 0 3px var(--ring);
-  transform: translateY(-1px);
+  box-shadow: 0 0 0 2px var(--ring);
+  transform: translateY(-0.5px);
 }
 
 /* Primario */
@@ -345,64 +366,68 @@ async function uploadFile() {
   color: #f9fafb;
 }
 
-.btn.primary:disabled {
-  opacity: 0.7;
-  cursor: default;
-  transform: none;
-  box-shadow: none;
+/* Secundario (borde claro, fondo oscuro) */
+.btn.secondary {
+  background: transparent;
+  border-color: rgba(148, 163, 184, 0.7);
 }
 
-.btn.primary:hover:not(:disabled),
-.btn.primary:focus-visible:not(:disabled) {
-  box-shadow: 0 0 0 3px var(--ring);
-}
-
-/* Ghost: para Cancelar */
+/* Ghost */
 .btn.btn-ghost {
   background: transparent;
   border-color: transparent;
-  color: var(--muted);
+  color: #cbd5f5;
 }
 
 .btn.btn-ghost:hover,
 .btn.btn-ghost:focus-visible {
-  background: rgba(148,163,184,0.12);
-  border-color: rgba(148,163,184,0.3);
-  box-shadow: 0 0 0 3px rgba(148,163,184,0.25);
+  background: rgba(148, 163, 184, 0.18);
+  border-color: rgba(148, 163, 184, 0.4);
 }
 
-/* =========================
-   Mobile: aún más compacto
-   ========================= */
+/* Estado "procesando primera imagen" */
+.upload-bar__processing {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-right: 4px;
+}
+
+.upload-bar__spinner {
+  width: 16px;
+  height: 16px;
+  border-radius: 999px;
+  border: 2px solid rgba(148, 163, 184, 0.45);
+  border-top-color: #38bdf8;
+  border-right-color: #a855f7;
+  animation: upload-spin 0.8s linear infinite;
+}
+
+.upload-bar__processing-title {
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+@keyframes upload-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Mobile */
 @media (max-width: 600px) {
   .upload-bar__content {
-    padding: 4px 8px;
-    gap: 6px;
-  }
-
-  .upload-bar__file {
-    flex-direction: row;
-    align-items: center;
-    gap: 4px;
-  }
-
-  .upload-bar__label {
-    font-size: 10px;
+    max-width: 94vw;
+    padding-inline: 8px;
   }
 
   .upload-bar__name {
-    font-size: 11px;
-    max-width: 110px;
-  }
-
-  .upload-bar__actions {
-    gap: 4px;
+    max-width: 120px;
   }
 
   .btn {
-    font-size: 11px;
-    padding: 4px 8px;
-    border-radius: 9px;
+    font-size: 10px;
+    padding-inline: 7px;
   }
 }
 </style>

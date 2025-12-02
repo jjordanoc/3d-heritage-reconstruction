@@ -75,13 +75,17 @@
       </div>
     </div>
 
-    <!-- Estado vacío: no hay nube de puntos todavía -->
-    <div v-else-if="isEmptyPointCloud" class="ply-empty">
+    <!-- Estado vacío:
+         solo cuando no hay nube Y NO se está procesando la primera imagen -->
+    <div
+      v-else-if="isEmptyPointCloud && !firstSceneProcessing"
+      class="ply-empty"
+    >
       <div class="ply-empty-card">
         <p class="ply-empty-title">Sé el primero en subir una imagen</p>
         <p class="ply-empty-sub">
-          Aún no se ha generado una nube de puntos para esta escena. Sube una imagen
-          para crear la primera reconstrucción 3D.
+          Aún no se ha generado una nube de puntos para esta escena. Sube una
+          imagen para crear la primera reconstrucción 3D.
         </p>
         <button
           type="button"
@@ -157,6 +161,13 @@ function parseMultipartResponse(arrayBuffer, contentType) {
 export default {
   name: 'PLYViewer',
 
+  props: {
+    firstSceneProcessing: {
+      type: Boolean,
+      default: false,
+    },
+  },
+
   data() {
     return {
       _raf: null,
@@ -171,16 +182,13 @@ export default {
       _currentObject: null,
       _fadingObjects: [],
 
-      // Helpers
       _axes: null,
       _grid: null,
 
-      // BBoxes
-      _worldBBox: new THREE.Box3(), // Nube de puntos real
-      _clampBBox: new THREE.Box3(), // BBox extendido para limitar el movimiento
+      _worldBBox: new THREE.Box3(),
+      _clampBBox: new THREE.Box3(),
 
-      // HUD / UI
-      moveSpeed: 3.5, // solo teclado
+      moveSpeed: 3.5,
       showPivot: true,
       showAxes: true,
       showGrid: true,
@@ -188,24 +196,17 @@ export default {
       camPos: new THREE.Vector3(),
       camTarget: new THREE.Vector3(),
 
-      // Pivot viz
       _pivotMarker: null,
       _pivotAxes: null,
 
-      // Metadata para feed
       pendingMetadata: null,
 
-      // WebSocket
       wsConnected: false,
       wsHandle: null,
 
-      // Modo mobile
       isMobile: false,
 
-      // Loader de nube de puntos
       isLoadingPointCloud: true,
-
-      // Estado: no hay nube de puntos aún
       isEmptyPointCloud: false,
     }
   },
@@ -260,15 +261,15 @@ export default {
       scene
     ))
     orbit.setGizmosVisible(false)
-    orbit.enableAnimations = false // sin inercia: no órbita infinita
+    orbit.enableAnimations = false
     orbit.dampingFactor = 0
     if ('minDistance' in orbit) orbit.minDistance = 0.01
     if ('maxDistance' in orbit) orbit.maxDistance = 1e6
 
-    // --- Helpers ---
+    // Helpers
     this._createHelpers(1)
 
-    // --- Pivot viz solo desktop ---
+    // Pivot viz solo desktop
     if (!this.isMobile) {
       this._createPivotViz()
       this._updatePivotViz()
@@ -1318,15 +1319,14 @@ export default {
 </script>
 
 <style scoped>
-/* Bloquear selección de texto y callouts dentro del viewer (iOS / mobile) */
+/* (todo tu CSS original, sin cambios) */
 .ply-root,
 .ply-root * {
   user-select: none;
   -webkit-user-select: none;
   -moz-user-select: none;
   -ms-user-select: none;
-
-  -webkit-touch-callout: none;           /* sin menú de copiar/buscar */
+  -webkit-touch-callout: none;
   -webkit-tap-highlight-color: transparent;
 }
 
@@ -1610,5 +1610,4 @@ export default {
     max-width: 90vw;
     width: 90vw;
   }
-}
-</style>
+}</style>
