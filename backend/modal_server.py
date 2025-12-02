@@ -593,6 +593,7 @@ def fastapi_app():
             keyframer_class = modal.Cls.from_name("resnet-keyframer", "ResNetKeyframer")
             keyframer = keyframer_class()
             expected_images = get_expected_images(id)
+            print(f"Expected images are {expected_images}")
             keyframer.do_selection_in_project.spawn(id,0,expected_images,0.85) # see modal_keyframer.py
         log_time("STEP 1: Upload Image", step1_start)
         print(f"{Colors.GREEN}✅ Image uploaded successfully to {uploaded}{Colors.RESET}\n")
