@@ -13,3 +13,5 @@ models/
 **/venv/
 
 node_modules
+
+experiments/

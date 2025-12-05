@@ -1,0 +1,1 @@
+UT3C Heritage es una plataforma colaborativa para la preservación del patrimonio cultural que genera reconstrucciones 3D densas en tiempo real mediante el crowdsourcing de imágenes.
